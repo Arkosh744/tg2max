@@ -32,17 +32,55 @@ func Load(path string) (*Config, error) {
 	}
 
 	if cfg.MaxToken == "" {
-		return nil, fmt.Errorf("max_token is required")
+		cfg.MaxToken = os.Getenv("MAX_TOKEN")
 	}
+	if cfg.MaxToken == "" {
+		return nil, fmt.Errorf("max_token is required (set in config or MAX_TOKEN env var)")
+	}
+
 	if len(cfg.Mappings) == 0 {
 		return nil, fmt.Errorf("at least one mapping is required")
 	}
-	if cfg.RateLimitRPS == 0 {
+
+	if cfg.RateLimitRPS <= 0 {
 		cfg.RateLimitRPS = 25
 	}
+
 	if cfg.CursorFile == "" {
 		cfg.CursorFile = "cursor.json"
 	}
 
+	if err := validateMappings(cfg.Mappings); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
+}
+
+func validateMappings(mappings []ChatMapping) error {
+	seen := make(map[string]struct{}, len(mappings))
+
+	for i, m := range mappings {
+		if m.Name == "" {
+			return fmt.Errorf("mapping[%d]: name is required", i)
+		}
+
+		if _, exists := seen[m.Name]; exists {
+			return fmt.Errorf("mapping[%d]: duplicate name %q", i, m.Name)
+		}
+		seen[m.Name] = struct{}{}
+
+		if m.TGExportPath == "" {
+			return fmt.Errorf("mapping[%d] %q: tg_export_path is required", i, m.Name)
+		}
+		if _, err := os.Stat(m.TGExportPath); err != nil {
+			return fmt.Errorf("mapping[%d] %q: tg_export_path %q: %w", i, m.Name, m.TGExportPath, err)
+		}
+
+		if m.MaxChatID <= 0 {
+			return fmt.Errorf("mapping[%d] %q: max_chat_id must be positive", i, m.Name)
+		}
+	}
+
+	return nil
 }

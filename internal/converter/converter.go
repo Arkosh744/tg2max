@@ -8,6 +8,9 @@ import (
 	"github.com/arkosh/tg2max/pkg/models"
 )
 
+// MaxMessageLength is the maximum allowed message length for Max messenger.
+const MaxMessageLength = 4096
+
 var ruMonths = [12]string{"янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"}
 
 type Converter struct{}
@@ -93,6 +96,46 @@ func (c *Converter) ConvertParts(parts []models.TextPart) string {
 		}
 	}
 	return b.String()
+}
+
+// SplitMessage splits text into chunks of at most maxLen characters,
+// preferring to break at newline boundaries to avoid splitting mid-word.
+func (c *Converter) SplitMessage(text string, maxLen int) []string {
+	if maxLen <= 0 {
+		maxLen = MaxMessageLength
+	}
+	if len(text) <= maxLen {
+		return []string{text}
+	}
+
+	var chunks []string
+	remaining := text
+
+	for len(remaining) > maxLen {
+		chunk := remaining[:maxLen]
+
+		// Find the last newline within the chunk to split cleanly
+		splitAt := strings.LastIndex(chunk, "\n")
+		if splitAt <= 0 {
+			// No newline found, try splitting at last space
+			splitAt = strings.LastIndex(chunk, " ")
+		}
+		if splitAt <= 0 {
+			// No good break point, force split at maxLen
+			splitAt = maxLen
+		} else {
+			splitAt++ // include the newline/space in the current chunk
+		}
+
+		chunks = append(chunks, remaining[:splitAt])
+		remaining = remaining[splitAt:]
+	}
+
+	if len(remaining) > 0 {
+		chunks = append(chunks, remaining)
+	}
+
+	return chunks
 }
 
 func (c *Converter) FormatTimestamp(t time.Time) string {

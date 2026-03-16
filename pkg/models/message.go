@@ -48,12 +48,3 @@ type ChatMapping struct {
 	TGExportPath string
 	MaxChatID    int64
 }
-
-// MigrationCursor tracks progress for resume capability
-type MigrationCursor struct {
-	ChatName      string    `json:"chat_name"`
-	LastMessageID int       `json:"last_message_id"`
-	TotalMessages int       `json:"total_messages"`
-	SentMessages  int       `json:"sent_messages"`
-	UpdatedAt     time.Time `json:"updated_at"`
-}

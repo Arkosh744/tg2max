@@ -14,25 +14,25 @@ const testFixture = "testdata/result.json"
 
 func TestReadAll_MessageCount(t *testing.T) {
 	reader := NewReader(testFixture)
-	msgs, err := reader.ReadAll(context.Background())
+	result, err := reader.ReadAll(context.Background())
 	if err != nil {
 		t.Fatalf("ReadAll returned error: %v", err)
 	}
 
 	// 6 total entries in fixture, 1 is service type -> 5 messages expected
-	if got := len(msgs); got != 5 {
+	if got := len(result.Messages); got != 5 {
 		t.Errorf("expected 5 messages, got %d", got)
 	}
 }
 
 func TestReadAll_ServiceMessagesSkipped(t *testing.T) {
 	reader := NewReader(testFixture)
-	msgs, err := reader.ReadAll(context.Background())
+	result, err := reader.ReadAll(context.Background())
 	if err != nil {
 		t.Fatalf("ReadAll returned error: %v", err)
 	}
 
-	for _, m := range msgs {
+	for _, m := range result.Messages {
 		if m.ID == 3 {
 			t.Error("service message with id=3 should have been filtered out")
 		}
@@ -41,12 +41,12 @@ func TestReadAll_ServiceMessagesSkipped(t *testing.T) {
 
 func TestReadAll_PlainTextMessage(t *testing.T) {
 	reader := NewReader(testFixture)
-	msgs, err := reader.ReadAll(context.Background())
+	result, err := reader.ReadAll(context.Background())
 	if err != nil {
 		t.Fatalf("ReadAll returned error: %v", err)
 	}
 
-	msg := findByID(t, msgs, 1)
+	msg := findByID(t, result.Messages, 1)
 
 	if msg.Author != "Alice" {
 		t.Errorf("expected author Alice, got %q", msg.Author)
@@ -73,12 +73,12 @@ func TestReadAll_PlainTextMessage(t *testing.T) {
 
 func TestReadAll_FormattedTextMessage(t *testing.T) {
 	reader := NewReader(testFixture)
-	msgs, err := reader.ReadAll(context.Background())
+	result, err := reader.ReadAll(context.Background())
 	if err != nil {
 		t.Fatalf("ReadAll returned error: %v", err)
 	}
 
-	msg := findByID(t, msgs, 2)
+	msg := findByID(t, result.Messages, 2)
 
 	if len(msg.RawParts) != 4 {
 		t.Fatalf("expected 4 text parts, got %d", len(msg.RawParts))
@@ -107,12 +107,12 @@ func TestReadAll_FormattedTextMessage(t *testing.T) {
 
 func TestReadAll_PhotoMessage(t *testing.T) {
 	reader := NewReader(testFixture)
-	msgs, err := reader.ReadAll(context.Background())
+	result, err := reader.ReadAll(context.Background())
 	if err != nil {
 		t.Fatalf("ReadAll returned error: %v", err)
 	}
 
-	msg := findByID(t, msgs, 4)
+	msg := findByID(t, result.Messages, 4)
 
 	if len(msg.Media) != 1 {
 		t.Fatalf("expected 1 media attachment, got %d", len(msg.Media))
@@ -133,12 +133,12 @@ func TestReadAll_PhotoMessage(t *testing.T) {
 
 func TestReadAll_DocumentMessage(t *testing.T) {
 	reader := NewReader(testFixture)
-	msgs, err := reader.ReadAll(context.Background())
+	result, err := reader.ReadAll(context.Background())
 	if err != nil {
 		t.Fatalf("ReadAll returned error: %v", err)
 	}
 
-	msg := findByID(t, msgs, 5)
+	msg := findByID(t, result.Messages, 5)
 
 	if len(msg.Media) != 1 {
 		t.Fatalf("expected 1 media attachment, got %d", len(msg.Media))
@@ -158,12 +158,12 @@ func TestReadAll_DocumentMessage(t *testing.T) {
 
 func TestReadAll_ForwardedMessage(t *testing.T) {
 	reader := NewReader(testFixture)
-	msgs, err := reader.ReadAll(context.Background())
+	result, err := reader.ReadAll(context.Background())
 	if err != nil {
 		t.Fatalf("ReadAll returned error: %v", err)
 	}
 
-	msg := findByID(t, msgs, 6)
+	msg := findByID(t, result.Messages, 6)
 
 	if msg.ForwardedFrom != "News Channel" {
 		t.Errorf("expected forwarded_from 'News Channel', got %q", msg.ForwardedFrom)

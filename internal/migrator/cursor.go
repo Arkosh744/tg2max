@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -58,7 +59,30 @@ func (cm *CursorManager) Save() error {
 		return fmt.Errorf("marshal cursors: %w", err)
 	}
 
-	return os.WriteFile(cm.filePath, data, 0644)
+	dir := filepath.Dir(cm.filePath)
+	tmp, err := os.CreateTemp(dir, ".cursor-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp cursor file: %w", err)
+	}
+	tmpPath := tmp.Name()
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write temp cursor file: %w", err)
+	}
+
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close temp cursor file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, cm.filePath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename temp cursor file: %w", err)
+	}
+
+	return nil
 }
 
 func (cm *CursorManager) GetLastMessageID(chatName string) int {

@@ -293,3 +293,85 @@ func TestFormatForMax_ForwardedWithMediaAndFormatting(t *testing.T) {
 		t.Errorf("FormatForMax complex =\n%q\nwant:\n%q", got, want)
 	}
 }
+
+func TestSplitMessage_ShortMessage(t *testing.T) {
+	c := New()
+	text := "Hello world"
+	chunks := c.SplitMessage(text, 100)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+	if chunks[0] != text {
+		t.Errorf("expected %q, got %q", text, chunks[0])
+	}
+}
+
+func TestSplitMessage_ExactLimit(t *testing.T) {
+	c := New()
+	text := "12345"
+	chunks := c.SplitMessage(text, 5)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+}
+
+func TestSplitMessage_SplitsAtNewline(t *testing.T) {
+	c := New()
+	text := "line one\nline two\nline three"
+	// maxLen=18 -> "line one\nline two\n" is 18 chars
+	chunks := c.SplitMessage(text, 18)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d: %q", len(chunks), chunks)
+	}
+	if chunks[0] != "line one\nline two\n" {
+		t.Errorf("chunk[0] = %q", chunks[0])
+	}
+	if chunks[1] != "line three" {
+		t.Errorf("chunk[1] = %q", chunks[1])
+	}
+}
+
+func TestSplitMessage_SplitsAtSpace(t *testing.T) {
+	c := New()
+	// No newlines, should split at space boundary
+	text := "word1 word2 word3 word4"
+	chunks := c.SplitMessage(text, 12)
+	if len(chunks) < 2 {
+		t.Fatalf("expected at least 2 chunks, got %d: %q", len(chunks), chunks)
+	}
+	// Verify no chunk exceeds maxLen
+	for i, chunk := range chunks {
+		if len(chunk) > 12 {
+			t.Errorf("chunk[%d] exceeds maxLen: %q (len=%d)", i, chunk, len(chunk))
+		}
+	}
+}
+
+func TestSplitMessage_ForceSplitNoBreakpoint(t *testing.T) {
+	c := New()
+	text := "abcdefghijklmnop"
+	chunks := c.SplitMessage(text, 5)
+	if len(chunks) != 4 {
+		t.Fatalf("expected 4 chunks, got %d: %q", len(chunks), chunks)
+	}
+	if chunks[0] != "abcde" {
+		t.Errorf("chunk[0] = %q, want %q", chunks[0], "abcde")
+	}
+}
+
+func TestSplitMessage_DefaultMaxLen(t *testing.T) {
+	c := New()
+	text := "short"
+	chunks := c.SplitMessage(text, 0)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk with default maxLen, got %d", len(chunks))
+	}
+}
+
+func TestSplitMessage_EmptyString(t *testing.T) {
+	c := New()
+	chunks := c.SplitMessage("", 100)
+	if len(chunks) != 1 || chunks[0] != "" {
+		t.Errorf("expected single empty chunk, got %q", chunks)
+	}
+}

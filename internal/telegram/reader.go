@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,6 +12,13 @@ import (
 
 	"github.com/arkosh/tg2max/pkg/models"
 )
+
+// ReadResult contains the outcome of reading a Telegram export file.
+type ReadResult struct {
+	Messages []models.Message
+	Skipped  int
+	Total    int
+}
 
 type Reader struct {
 	exportPath string
@@ -28,22 +36,28 @@ func (r *Reader) BasePath() string {
 	return r.baseDir
 }
 
-func (r *Reader) ReadAll(ctx context.Context) ([]models.Message, error) {
+func (r *Reader) ReadAll(ctx context.Context) (ReadResult, error) {
 	data, err := os.ReadFile(r.exportPath)
 	if err != nil {
-		return nil, fmt.Errorf("read export file %s: %w", r.exportPath, err)
+		return ReadResult{}, fmt.Errorf("read export file %s: %w", r.exportPath, err)
 	}
 
 	var export tgExport
 	if err := json.Unmarshal(data, &export); err != nil {
-		return nil, fmt.Errorf("parse export json: %w", err)
+		return ReadResult{}, fmt.Errorf("parse export json: %w", err)
 	}
 
-	var messages []models.Message
+	// Free raw bytes after parsing; keep only the decoded structs.
+	data = nil
+
+	result := ReadResult{
+		Total: len(export.Messages),
+	}
+
 	for _, msg := range export.Messages {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return ReadResult{}, ctx.Err()
 		default:
 		}
 
@@ -53,12 +67,17 @@ func (r *Reader) ReadAll(ctx context.Context) ([]models.Message, error) {
 
 		m, err := r.convertMessage(msg)
 		if err != nil {
+			result.Skipped++
+			slog.Warn("skipped message during conversion",
+				"message_id", msg.ID,
+				"error", err,
+			)
 			continue
 		}
-		messages = append(messages, m)
+		result.Messages = append(result.Messages, m)
 	}
 
-	return messages, nil
+	return result, nil
 }
 
 func (r *Reader) convertMessage(msg tgMessage) (models.Message, error) {
