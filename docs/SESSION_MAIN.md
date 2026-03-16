@@ -67,3 +67,36 @@ All tests pass, project compiles successfully.
 
 ### Result
 All builds pass, all tests pass (converter: 32 tests, telegram: 10 tests).
+
+## [2026-03-16 15:00:00] Bot entry point and DX files
+
+### Created files
+- `cmd/tg2max-bot/main.go` — entry point: YAML/env config, graceful shutdown via SIGINT/SIGTERM
+- `internal/bot/bot.go` — stub: Config, Bot struct, New constructor, Run method
+- `Makefile` — build, build-bot, build-all, test, lint, clean targets
+- `Dockerfile` — multi-stage build (golang:1.26-alpine -> alpine:3.21)
+
+### Result
+`go build ./cmd/tg2max-bot/` compiles successfully.
+
+## [2026-03-16 16:00:00] Telegram bot handlers
+
+### Implementation
+- Full `internal/bot/bot.go` with all command handlers
+- Commands: /start, /help, /setchat, /status, /preview, /migrate, /cancel
+- ZIP upload: download via TG API, extract, analyze, store session
+- Migration: runs in goroutine, progress tracked by reading cursor.json every 3s
+- Progress bar with unicode block chars, edits TG message in-place
+- Cancel support via context cancellation
+- `downloadFile` helper using net/http
+
+### Design decisions
+- No migrator modification needed: progress tracked by reading cursor.json periodically
+- Separate goroutine for progress updates, communicates via channel + context
+- Session state machine prevents concurrent migrations
+
+### Files changed
+- `internal/bot/bot.go` — full rewrite from stub
+
+### Result
+`go build ./...` compiles successfully.

@@ -1,4 +1,6 @@
 tg2max
+tg2max-bot
+bin/
 config.yaml
 cursor.json
 *.exe

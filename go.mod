@@ -3,6 +3,7 @@ module github.com/arkosh/tg2max
 go 1.26.1
 
 require (
+	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/max-messenger/max-bot-api-client-go v1.6.4
 	golang.org/x/time v0.14.0
 	gopkg.in/yaml.v3 v3.0.1

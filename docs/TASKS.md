@@ -7,3 +7,5 @@
 - [x] [100%] Message length splitting in converter — SplitMessage with newline/space boundary detection (2026-03-16)
 - [x] [100%] CLI flags --dry-run and --verbose — dryRunSender + slog level switch (2026-03-16)
 - [x] [100%] Migration statistics — Stats struct returned from MigrateAll, printed in main (2026-03-16)
+- [x] [100%] Bot entry point + DX files — main.go, Makefile, Dockerfile, bot stub (2026-03-16)
+- [x] [100%] Telegram bot handlers — full handler implementation with commands, ZIP upload, migration, progress tracking (2026-03-16)
