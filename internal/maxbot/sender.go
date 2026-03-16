@@ -3,6 +3,7 @@ package maxbot
 import (
 	"context"
 	"fmt"
+	"time"
 
 	maxbot "github.com/max-messenger/max-bot-api-client-go"
 	"github.com/max-messenger/max-bot-api-client-go/schemes"
@@ -17,7 +18,7 @@ type Sender struct {
 }
 
 func NewSender(token string, rps int) (*Sender, error) {
-	api, err := maxbot.New(token)
+	api, err := maxbot.New(token, maxbot.WithApiTimeout(30*time.Second))
 	if err != nil {
 		return nil, fmt.Errorf("create max bot api: %w", err)
 	}
