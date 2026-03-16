@@ -15,6 +15,8 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
+	maxbotapi "github.com/max-messenger/max-bot-api-client-go"
+
 	"github.com/arkosh/tg2max/internal/converter"
 	"github.com/arkosh/tg2max/internal/export"
 	"github.com/arkosh/tg2max/internal/maxbot"
@@ -199,18 +201,41 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	chatID := cb.Message.Chat.ID
 	userID := cb.From.ID
 
-	switch cb.Data {
-	case "help":
+	switch {
+	case cb.Data == "help":
 		b.handleHelp(cb.Message)
-	case "preview":
+	case cb.Data == "preview":
 		b.showPreviewAndConfirm(chatID, userID)
-	case "confirm_migrate":
+	case cb.Data == "confirm_migrate":
 		b.startMigration(ctx, chatID, userID)
-	case "cancel":
+	case cb.Data == "cancel":
 		b.cancelMigration(chatID, userID)
-	case "status":
+	case cb.Data == "status":
 		b.showStatus(chatID, userID)
+	case strings.HasPrefix(cb.Data, "select_chat:"):
+		b.handleSelectChat(chatID, userID, cb.Data)
 	}
+}
+
+func (b *Bot) handleSelectChat(tgChatID int64, userID int64, data string) {
+	idStr := strings.TrimPrefix(data, "select_chat:")
+	maxChatID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		b.reply(tgChatID, "Ошибка выбора чата.")
+		return
+	}
+
+	sess := b.sessions.Get(userID)
+	if sess == nil {
+		b.reply(tgChatID, "Сначала отправь ZIP-экспорт.")
+		return
+	}
+
+	sess.mu.Lock()
+	sess.MaxChatID = maxChatID
+	sess.mu.Unlock()
+
+	b.showPreviewAndConfirm(tgChatID, userID)
 }
 
 // --- Step 0: Start ---
@@ -309,9 +334,32 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 	if info.Documents > 0 {
 		fmt.Fprintf(&sb, "📄 Документов: %d\n", info.Documents)
 	}
-	sb.WriteString("\nТеперь отправь Max chat ID (число):")
 
-	b.reply(msg.Chat.ID, sb.String())
+	// Try to fetch Max chats for inline buttons
+	chats := b.fetchMaxChats()
+	if len(chats) > 0 {
+		sb.WriteString("\nВыбери чат в Max для переноса:")
+		reply := tgbotapi.NewMessage(msg.Chat.ID, sb.String())
+		var rows [][]tgbotapi.InlineKeyboardButton
+		for _, c := range chats {
+			label := c.title
+			if label == "" {
+				label = fmt.Sprintf("Chat %d", c.id)
+			}
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					label,
+					fmt.Sprintf("select_chat:%d", c.id),
+				),
+			))
+		}
+		reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+		b.api.Send(reply)
+	} else {
+		sb.WriteString("\nОтправь Max chat ID (число).\n\n")
+		sb.WriteString("Добавь Max-бота в нужный чат, затем я смогу показать список.")
+		b.reply(msg.Chat.ID, sb.String())
+	}
 }
 
 // --- Step 2: Set chat ID ---
@@ -549,6 +597,47 @@ func (b *Bot) cancelMigration(chatID int64, userID int64) {
 	sess.mu.Unlock()
 
 	b.replyWithKeyboard(chatID, "⏹ Миграция отменена. Прогресс сохранён.", keyboardMain())
+}
+
+// --- Max API ---
+
+type maxChat struct {
+	id    int64
+	title string
+}
+
+func (b *Bot) fetchMaxChats() []maxChat {
+	if b.maxToken == "" || b.maxToken == "placeholder" {
+		return nil
+	}
+
+	api, err := maxbotapi.New(b.maxToken)
+	if err != nil {
+		b.log.Debug("failed to create max api for chat list", "error", err)
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	list, err := api.Chats.GetChats(ctx, 50, 0)
+	if err != nil {
+		b.log.Debug("failed to fetch max chats", "error", err)
+		return nil
+	}
+
+	var chats []maxChat
+	for _, c := range list.Chats {
+		if c.Status != "active" {
+			continue
+		}
+		title := c.Title
+		if c.Type == "dialog" {
+			title = "Диалог"
+		}
+		chats = append(chats, maxChat{id: c.ChatId, title: title})
+	}
+	return chats
 }
 
 // --- Helpers ---
