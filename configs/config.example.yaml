@@ -1,0 +1,12 @@
+max_token: "your-max-bot-token"
+rate_limit_rps: 25
+cursor_file: "cursor.json"
+
+mappings:
+  - name: "Dev Chat"
+    tg_export_path: "/path/to/exports/dev_chat/result.json"
+    max_chat_id: 123456789
+
+  - name: "General"
+    tg_export_path: "/path/to/exports/general/result.json"
+    max_chat_id: 987654321

@@ -1,0 +1,72 @@
+{
+  "name": "Test Chat",
+  "type": "personal_chat",
+  "id": 123456,
+  "messages": [
+    {
+      "id": 1,
+      "type": "message",
+      "date": "2026-03-14T10:00:00",
+      "date_unixtime": "1773741600",
+      "from": "Alice",
+      "from_id": "user111",
+      "text": "Hello world"
+    },
+    {
+      "id": 2,
+      "type": "message",
+      "date": "2026-03-14T10:01:00",
+      "date_unixtime": "1773741660",
+      "from": "Bob",
+      "from_id": "user222",
+      "text": [
+        {"type": "plain", "text": "Check this "},
+        {"type": "bold", "text": "important"},
+        {"type": "plain", "text": " link: "},
+        {"type": "text_link", "text": "click here", "href": "https://example.com"}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "service",
+      "date": "2026-03-14T10:02:00",
+      "date_unixtime": "1773741720",
+      "actor": "Alice",
+      "action": "pin_message"
+    },
+    {
+      "id": 4,
+      "type": "message",
+      "date": "2026-03-14T10:03:00",
+      "date_unixtime": "1773741780",
+      "from": "Alice",
+      "from_id": "user111",
+      "text": "Photo message",
+      "photo": "photos/photo_1.jpg",
+      "width": 800,
+      "height": 600
+    },
+    {
+      "id": 5,
+      "type": "message",
+      "date": "2026-03-14T10:04:00",
+      "date_unixtime": "1773741840",
+      "from": "Bob",
+      "from_id": "user222",
+      "text": "",
+      "file": "files/document.pdf",
+      "media_type": "",
+      "mime_type": "application/pdf"
+    },
+    {
+      "id": 6,
+      "type": "message",
+      "date": "2026-03-14T10:05:00",
+      "date_unixtime": "1773741900",
+      "from": "Alice",
+      "from_id": "user111",
+      "text": "Forwarded content",
+      "forwarded_from": "News Channel"
+    }
+  ]
+}

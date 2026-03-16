@@ -1,0 +1,6 @@
+tg2max
+config.yaml
+cursor.json
+*.exe
+.idea/
+.vscode/
