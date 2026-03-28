@@ -5,40 +5,70 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	maxbotapi "github.com/max-messenger/max-bot-api-client-go"
 	"github.com/max-messenger/max-bot-api-client-go/schemes"
-	"golang.org/x/time/rate"
 
 	"github.com/arkosh/tg2max/pkg/models"
 )
 
-// retryBackoff defines delays between retry attempts.
-var retryBackoff = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+// retryBackoff defines delays between retry attempts for 429/5xx errors.
+// Max API has an undocumented per-chat cooldown (likely 30-120s after burst).
+var retryBackoff = []time.Duration{30 * time.Second, 60 * time.Second, 60 * time.Second, 120 * time.Second, 120 * time.Second}
+
+// RetryNotifyFunc is called when a retry is about to happen.
+// attempt is 1-based, waitDur is how long we'll wait before the next try.
+type RetryNotifyFunc func(attempt int, err error, waitDur time.Duration)
 
 type Sender struct {
 	api     *maxbotapi.Api
-	limiter *rate.Limiter
+	delay   time.Duration // pause between sends to avoid 429
+	onRetry RetryNotifyFunc
 }
 
-func NewSender(token string, rps int) (*Sender, error) {
+func NewSender(token string, rps float64) (*Sender, error) {
 	api, err := maxbotapi.New(token, maxbotapi.WithApiTimeout(30*time.Second))
 	if err != nil {
 		return nil, fmt.Errorf("create max bot api: %w", err)
 	}
 
+	delay := time.Second // default 1 msg/sec
+	if rps > 0 {
+		delay = time.Duration(float64(time.Second) / rps)
+	}
+
 	return &Sender{
-		api:     api,
-		limiter: rate.NewLimiter(rate.Limit(rps), 1),
+		api:   api,
+		delay: delay,
 	}, nil
+}
+
+// SetOnRetry sets a callback that fires before each retry wait.
+func (s *Sender) SetOnRetry(fn RetryNotifyFunc) {
+	s.onRetry = fn
+}
+
+// Close is a no-op for the bot API sender (no persistent connection).
+func (s *Sender) Close() error {
+	return nil
+}
+
+// wait pauses between sends to stay under Max API rate limits.
+func (s *Sender) wait(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(s.delay):
+		return nil
+	}
 }
 
 // withRetry retries op on network errors and HTTP 429/5xx with exponential backoff.
 func (s *Sender) withRetry(ctx context.Context, op func() error) error {
-	backoff := retryBackoff
 	var lastErr error
-	for i := 0; i <= len(backoff); i++ {
+	for i := 0; i <= len(retryBackoff); i++ {
 		lastErr = op()
 		if lastErr == nil {
 			return nil
@@ -46,40 +76,48 @@ func (s *Sender) withRetry(ctx context.Context, op func() error) error {
 		if !isRetryable(lastErr) {
 			return lastErr
 		}
-		if i < len(backoff) {
+		if i < len(retryBackoff) {
+			if s.onRetry != nil {
+				s.onRetry(i+1, lastErr, retryBackoff[i])
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(backoff[i]):
+			case <-time.After(retryBackoff[i]):
 			}
 		}
 	}
 	return lastErr
 }
 
-// isRetryable returns true for network errors and HTTP 429/5xx responses.
+// isRetryable returns true for HTTP 429 responses and network errors.
+// HTTP 500 on uploads is NOT retried — it's a server-side bug, not transient.
 func isRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	// Check for max-bot-api-client-go API error with status code
 	var apiErr *maxbotapi.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.Code == http.StatusTooManyRequests || apiErr.Code >= http.StatusInternalServerError
+		return apiErr.Code == http.StatusTooManyRequests
 	}
 
-	// Network errors (timeout, connection refused, etc.) are retryable
-	// If it's not an API error, treat as network error
+	// Check if it's an upload error (HTTP 500 from upload CDN) — not retryable
+	errStr := err.Error()
+	if strings.Contains(errStr, "upload:") && strings.Contains(errStr, "500") {
+		return false
+	}
+
+	// Network errors (timeout, connection refused) are retryable
 	return true
 }
 
 func (s *Sender) SendText(ctx context.Context, chatID int64, text string) error {
-	return s.withRetry(ctx, func() error {
-		if err := s.limiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limiter wait: %w", err)
-		}
+	if err := s.wait(ctx); err != nil {
+		return err
+	}
 
+	return s.withRetry(ctx, func() error {
 		msg := maxbotapi.NewMessage().
 			SetChat(chatID).
 			SetText(text).
@@ -88,24 +126,19 @@ func (s *Sender) SendText(ctx context.Context, chatID int64, text string) error 
 		if err := s.api.Messages.Send(ctx, msg); err != nil {
 			return fmt.Errorf("send text to chat %d: %w", chatID, err)
 		}
-
 		return nil
 	})
 }
 
 func (s *Sender) SendWithPhoto(ctx context.Context, chatID int64, text string, photoPath string) error {
-	return s.withRetry(ctx, func() error {
-		if err := s.limiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limiter wait: %w", err)
-		}
+	if err := s.wait(ctx); err != nil {
+		return err
+	}
 
+	return s.withRetry(ctx, func() error {
 		photo, err := s.api.Uploads.UploadPhotoFromFile(ctx, photoPath)
 		if err != nil {
 			return fmt.Errorf("upload photo %s: %w", photoPath, err)
-		}
-
-		if err := s.limiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limiter wait: %w", err)
 		}
 
 		msg := maxbotapi.NewMessage().
@@ -117,26 +150,28 @@ func (s *Sender) SendWithPhoto(ctx context.Context, chatID int64, text string, p
 		if err := s.api.Messages.Send(ctx, msg); err != nil {
 			return fmt.Errorf("send photo to chat %d: %w", chatID, err)
 		}
-
 		return nil
 	})
 }
 
 func (s *Sender) SendWithMedia(ctx context.Context, chatID int64, text string, mediaPath string, mediaType models.MediaType) error {
-	return s.withRetry(ctx, func() error {
-		if err := s.limiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limiter wait: %w", err)
-		}
+	if err := s.wait(ctx); err != nil {
+		return err
+	}
 
+	return s.withRetry(ctx, func() error {
 		uploadType := resolveUploadType(mediaType)
 
 		uploaded, err := s.api.Uploads.UploadMediaFromFile(ctx, uploadType, mediaPath)
+		if err != nil && uploadType == schemes.VIDEO {
+			// Fallback: retry video as generic file
+			uploaded, err = s.api.Uploads.UploadMediaFromFile(ctx, schemes.FILE, mediaPath)
+			if err == nil {
+				uploadType = schemes.FILE
+			}
+		}
 		if err != nil {
 			return fmt.Errorf("upload media %s: %w", mediaPath, err)
-		}
-
-		if err := s.limiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limiter wait: %w", err)
 		}
 
 		msg := maxbotapi.NewMessage().
@@ -156,7 +191,6 @@ func (s *Sender) SendWithMedia(ctx context.Context, chatID int64, text string, m
 		if err := s.api.Messages.Send(ctx, msg); err != nil {
 			return fmt.Errorf("send media to chat %d: %w", chatID, err)
 		}
-
 		return nil
 	})
 }
