@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/arkosh/tg2max/internal/converter"
 	"github.com/arkosh/tg2max/pkg/models"
@@ -30,6 +32,8 @@ type mockSender struct {
 func newMockSender(failAt int) *mockSender {
 	return &mockSender{failAt: failAt}
 }
+
+func (s *mockSender) Close() error { return nil }
 
 func (s *mockSender) checkFail() error {
 	if s.failAt >= 0 && len(s.messages) >= s.failAt {
@@ -85,8 +89,8 @@ func writeTempExport(t *testing.T, dir string, n int) string {
 			Type:         "message",
 			Date:         fmt.Sprintf("2026-03-14T10:%02d:00", i),
 			DateUnixtime: fmt.Sprintf("%d", 1773741600+i*60),
-			From:         "TestUser",
-			FromID:       "user100",
+			From:         fmt.Sprintf("User%d", i+1), // different authors to prevent grouping
+			FromID:       fmt.Sprintf("user%d", i+1),
 			Text:         fmt.Sprintf("Message %d", i+1),
 		}
 	}
@@ -330,6 +334,8 @@ type cancellingMockSender struct {
 	callCount int
 }
 
+func (s *cancellingMockSender) Close() error { return nil }
+
 func (s *cancellingMockSender) SendText(ctx context.Context, chatID int64, text string) error {
 	s.callCount++
 	if s.callCount == s.cancelAt {
@@ -464,10 +470,456 @@ func Test_MediaMessageSendFailFallback(t *testing.T) {
 	}
 }
 
+// --- filterMessages tests ---
+
+func Test_FilterMessages_All(t *testing.T) {
+	msgs := []models.Message{
+		{ID: 1, Timestamp: time.Now()},
+		{ID: 2, Timestamp: time.Now(), Media: []models.MediaFile{{Type: models.MediaPhoto}}},
+	}
+	got := filterMessages(msgs, "", 0)
+	if len(got) != 2 {
+		t.Errorf("expected 2 messages, got %d", len(got))
+	}
+}
+
+func Test_FilterMessages_TextOnly(t *testing.T) {
+	msgs := []models.Message{
+		{ID: 1, Timestamp: time.Now()},
+		{ID: 2, Timestamp: time.Now(), Media: []models.MediaFile{{Type: models.MediaPhoto}}},
+		{ID: 3, Timestamp: time.Now()},
+	}
+	got := filterMessages(msgs, "text", 0)
+	if len(got) != 2 {
+		t.Errorf("expected 2 text-only messages, got %d", len(got))
+	}
+	for _, m := range got {
+		if len(m.Media) > 0 {
+			t.Errorf("message %d should have no media", m.ID)
+		}
+	}
+}
+
+func Test_FilterMessages_MediaOnly(t *testing.T) {
+	msgs := []models.Message{
+		{ID: 1, Timestamp: time.Now()},
+		{ID: 2, Timestamp: time.Now(), Media: []models.MediaFile{{Type: models.MediaPhoto}}},
+		{ID: 3, Timestamp: time.Now(), Media: []models.MediaFile{{Type: models.MediaVideo}}},
+	}
+	got := filterMessages(msgs, "media", 0)
+	if len(got) != 2 {
+		t.Errorf("expected 2 media messages, got %d", len(got))
+	}
+	for _, m := range got {
+		if len(m.Media) == 0 {
+			t.Errorf("message %d should have media", m.ID)
+		}
+	}
+}
+
+func Test_FilterMessages_DateCutoff(t *testing.T) {
+	old := time.Now().AddDate(0, -12, 0)  // 12 months ago
+	recent := time.Now().AddDate(0, -1, 0) // 1 month ago
+	msgs := []models.Message{
+		{ID: 1, Timestamp: old},
+		{ID: 2, Timestamp: recent},
+		{ID: 3, Timestamp: time.Now()},
+	}
+	// Filter: last 3 months — should keep IDs 2 and 3
+	got := filterMessages(msgs, "", 3)
+	if len(got) != 2 {
+		t.Errorf("expected 2 recent messages, got %d", len(got))
+	}
+	if got[0].ID != 2 || got[1].ID != 3 {
+		t.Errorf("expected IDs [2,3], got [%d,%d]", got[0].ID, got[1].ID)
+	}
+}
+
+func Test_FilterMessages_DateAndTypeCombo(t *testing.T) {
+	old := time.Now().AddDate(0, -12, 0)
+	recent := time.Now().AddDate(0, -1, 0)
+	msgs := []models.Message{
+		{ID: 1, Timestamp: recent},                                                            // recent text
+		{ID: 2, Timestamp: recent, Media: []models.MediaFile{{Type: models.MediaPhoto}}},     // recent media
+		{ID: 3, Timestamp: old},                                                               // old text
+		{ID: 4, Timestamp: old, Media: []models.MediaFile{{Type: models.MediaPhoto}}},        // old media
+	}
+	// Only recent media
+	got := filterMessages(msgs, "media", 3)
+	if len(got) != 1 || got[0].ID != 2 {
+		t.Errorf("expected only message ID=2, got %v", got)
+	}
+}
+
+func Test_FilterMessages_EmptyInput(t *testing.T) {
+	got := filterMessages(nil, "text", 6)
+	if len(got) != 0 {
+		t.Errorf("expected empty result for nil input, got %d", len(got))
+	}
+}
+
+// --- replyTextFor tests ---
+
+func Test_ReplyTextFor_NilReplyToID(t *testing.T) {
+	msg := models.Message{ID: 1}
+	index := map[int]string{1: "some text"}
+	got := replyTextFor(msg, index)
+	if got != "" {
+		t.Errorf("expected empty string for nil ReplyToID, got %q", got)
+	}
+}
+
+func Test_ReplyTextFor_IDExistsInIndex(t *testing.T) {
+	replyID := 5
+	msg := models.Message{ID: 10, ReplyToID: &replyID}
+	index := map[int]string{5: "original message text"}
+	got := replyTextFor(msg, index)
+	if got != "original message text" {
+		t.Errorf("expected reply text, got %q", got)
+	}
+}
+
+func Test_ReplyTextFor_IDNotInIndex(t *testing.T) {
+	replyID := 99
+	msg := models.Message{ID: 10, ReplyToID: &replyID}
+	index := map[int]string{5: "other message"}
+	got := replyTextFor(msg, index)
+	if got != "" {
+		t.Errorf("expected empty string for missing ID in index, got %q", got)
+	}
+}
+
+// --- DryRun tests ---
+
+func Test_DryRun_EmptyMessages(t *testing.T) {
+	conv := converter.New()
+	stats := DryRun(nil, conv)
+	if stats.TotalInput != 0 {
+		t.Errorf("expected TotalInput=0, got %d", stats.TotalInput)
+	}
+	if stats.OutputMessages != 0 {
+		t.Errorf("expected OutputMessages=0, got %d", stats.OutputMessages)
+	}
+}
+
+func Test_DryRun_SingleTextMessage(t *testing.T) {
+	conv := converter.New()
+	msgs := []models.Message{
+		{
+			ID:        1,
+			Author:    "Alice",
+			Timestamp: time.Now(),
+			RawParts:  []models.TextPart{{Text: "Hello world"}},
+		},
+	}
+	stats := DryRun(msgs, conv)
+	if stats.TotalInput != 1 {
+		t.Errorf("expected TotalInput=1, got %d", stats.TotalInput)
+	}
+	if stats.OutputMessages != 1 {
+		t.Errorf("expected OutputMessages=1, got %d", stats.OutputMessages)
+	}
+	if stats.TextOnlyCount != 1 {
+		t.Errorf("expected TextOnlyCount=1, got %d", stats.TextOnlyCount)
+	}
+	if stats.GroupedCount != 0 {
+		t.Errorf("expected GroupedCount=0, got %d", stats.GroupedCount)
+	}
+}
+
+func Test_DryRun_GroupableMessages(t *testing.T) {
+	conv := converter.New()
+	now := time.Now()
+	// Two messages from same author within 5 min, no media — should group
+	msgs := []models.Message{
+		{
+			ID:        1,
+			Author:    "Alice",
+			Timestamp: now,
+			RawParts:  []models.TextPart{{Text: "First"}},
+		},
+		{
+			ID:        2,
+			Author:    "Alice",
+			Timestamp: now.Add(1 * time.Minute),
+			RawParts:  []models.TextPart{{Text: "Second"}},
+		},
+	}
+	stats := DryRun(msgs, conv)
+	if stats.TotalInput != 2 {
+		t.Errorf("expected TotalInput=2, got %d", stats.TotalInput)
+	}
+	if stats.GroupedCount != 2 {
+		t.Errorf("expected GroupedCount=2, got %d", stats.GroupedCount)
+	}
+	// Two input messages → one grouped output message (1 chunk)
+	if stats.OutputMessages != 1 {
+		t.Errorf("expected OutputMessages=1 after grouping, got %d", stats.OutputMessages)
+	}
+}
+
+func Test_DryRun_MediaMessages(t *testing.T) {
+	conv := converter.New()
+	msgs := []models.Message{
+		{
+			ID:        1,
+			Author:    "Bob",
+			Timestamp: time.Now(),
+			RawParts:  []models.TextPart{{Text: "Photo caption"}},
+			Media:     []models.MediaFile{{Type: models.MediaPhoto, FileName: "img.jpg"}},
+		},
+	}
+	stats := DryRun(msgs, conv)
+	if stats.MediaCount != 1 {
+		t.Errorf("expected MediaCount=1, got %d", stats.MediaCount)
+	}
+	if stats.StickerCount != 0 {
+		t.Errorf("expected StickerCount=0, got %d", stats.StickerCount)
+	}
+}
+
+func Test_DryRun_StickerMessage(t *testing.T) {
+	conv := converter.New()
+	msgs := []models.Message{
+		{
+			ID:           1,
+			Author:       "Carol",
+			Timestamp:    time.Now(),
+			StickerEmoji: "😂",
+			Media:        []models.MediaFile{{Type: models.MediaSticker, FileName: "sticker.webp"}},
+		},
+	}
+	stats := DryRun(msgs, conv)
+	if stats.StickerCount != 1 {
+		t.Errorf("expected StickerCount=1, got %d", stats.StickerCount)
+	}
+	if stats.MediaCount != 0 {
+		t.Errorf("expected MediaCount=0 (sticker handled separately), got %d", stats.MediaCount)
+	}
+	if stats.TextOnlyCount != 1 {
+		t.Errorf("expected TextOnlyCount=1 (sticker sends as text), got %d", stats.TextOnlyCount)
+	}
+}
+
+func Test_DryRun_LongMessageSplits(t *testing.T) {
+	conv := converter.New()
+	// Build a text longer than MaxMessageLength (4096 runes)
+	longText := strings.Repeat("a", 5000)
+	msgs := []models.Message{
+		{
+			ID:        1,
+			Author:    "Dave",
+			Timestamp: time.Now(),
+			RawParts:  []models.TextPart{{Text: longText}},
+		},
+	}
+	stats := DryRun(msgs, conv)
+	if stats.SplitCount != 1 {
+		t.Errorf("expected SplitCount=1, got %d", stats.SplitCount)
+	}
+	if stats.OutputMessages < 2 {
+		t.Errorf("expected OutputMessages>=2 for long message, got %d", stats.OutputMessages)
+	}
+}
+
+func Test_DryRun_MultipleMediaAttachments(t *testing.T) {
+	conv := converter.New()
+	// Message with 3 media items: first sent with text, 2 additional = 2 extra outputs
+	msgs := []models.Message{
+		{
+			ID:        1,
+			Author:    "Eve",
+			Timestamp: time.Now(),
+			RawParts:  []models.TextPart{{Text: "Three files"}},
+			Media: []models.MediaFile{
+				{Type: models.MediaPhoto, FileName: "a.jpg"},
+				{Type: models.MediaPhoto, FileName: "b.jpg"},
+				{Type: models.MediaPhoto, FileName: "c.jpg"},
+			},
+		},
+	}
+	stats := DryRun(msgs, conv)
+	if stats.MediaCount != 1 {
+		t.Errorf("expected MediaCount=1, got %d", stats.MediaCount)
+	}
+	// 1 (text+first media) + 2 (additional media) = 3 output messages
+	if stats.OutputMessages != 3 {
+		t.Errorf("expected OutputMessages=3, got %d", stats.OutputMessages)
+	}
+}
+
+// --- sendMessage with StickerEmoji tests ---
+
+// trackingSender records which send methods were called.
+type trackingSender struct {
+	textCalls  int
+	photoCalls int
+	mediaCalls int
+}
+
+func (s *trackingSender) Close() error { return nil }
+
+func (s *trackingSender) SendText(_ context.Context, _ int64, _ string) error {
+	s.textCalls++
+	return nil
+}
+
+func (s *trackingSender) SendWithPhoto(_ context.Context, _ int64, _ string, _ string) error {
+	s.photoCalls++
+	return nil
+}
+
+func (s *trackingSender) SendWithMedia(_ context.Context, _ int64, _ string, _ string, _ models.MediaType) error {
+	s.mediaCalls++
+	return nil
+}
+
+func Test_SendMessage_StickerEmojiSendsTextOnly(t *testing.T) {
+	tracker := &trackingSender{}
+	conv := converter.New()
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	m := &Migrator{sender: tracker, converter: conv, log: log}
+
+	msg := models.Message{
+		ID:           1,
+		Author:       "Alice",
+		Timestamp:    time.Now(),
+		StickerEmoji: "😂",
+		Media:        []models.MediaFile{{Type: models.MediaSticker, FileName: "sticker.webp", FilePath: "stickers/s.webp"}},
+	}
+
+	mediaErrors, failedFile, err := m.sendMessage(context.Background(), 42, msg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mediaErrors != 0 {
+		t.Errorf("expected 0 media errors, got %d", mediaErrors)
+	}
+	if failedFile != "" {
+		t.Errorf("expected empty failedFile, got %q", failedFile)
+	}
+	if tracker.textCalls != 1 {
+		t.Errorf("expected 1 SendText call, got %d", tracker.textCalls)
+	}
+	if tracker.photoCalls != 0 {
+		t.Errorf("expected 0 SendWithPhoto calls, got %d", tracker.photoCalls)
+	}
+	if tracker.mediaCalls != 0 {
+		t.Errorf("expected 0 SendWithMedia calls, got %d", tracker.mediaCalls)
+	}
+}
+
+func Test_SendMessage_TextOnlySendsText(t *testing.T) {
+	tracker := &trackingSender{}
+	conv := converter.New()
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	m := &Migrator{sender: tracker, converter: conv, log: log}
+
+	msg := models.Message{
+		ID:        2,
+		Author:    "Bob",
+		Timestamp: time.Now(),
+		RawParts:  []models.TextPart{{Text: "Hello"}},
+	}
+
+	_, _, err := m.sendMessage(context.Background(), 42, msg, map[int]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tracker.textCalls != 1 {
+		t.Errorf("expected 1 SendText call, got %d", tracker.textCalls)
+	}
+	if tracker.photoCalls != 0 || tracker.mediaCalls != 0 {
+		t.Errorf("expected no media calls for text-only message")
+	}
+}
+
+func Test_SendMessage_PhotoMessage(t *testing.T) {
+	tracker := &trackingSender{}
+	conv := converter.New()
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	m := &Migrator{sender: tracker, converter: conv, log: log}
+
+	msg := models.Message{
+		ID:        3,
+		Author:    "Carol",
+		Timestamp: time.Now(),
+		RawParts:  []models.TextPart{{Text: "Photo caption"}},
+		Media:     []models.MediaFile{{Type: models.MediaPhoto, FileName: "img.jpg", FilePath: "photos/img.jpg"}},
+	}
+
+	mediaErrors, _, err := m.sendMessage(context.Background(), 42, msg, map[int]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mediaErrors != 0 {
+		t.Errorf("expected 0 media errors, got %d", mediaErrors)
+	}
+	if tracker.photoCalls != 1 {
+		t.Errorf("expected 1 SendWithPhoto call, got %d", tracker.photoCalls)
+	}
+	if tracker.textCalls != 0 {
+		t.Errorf("expected 0 SendText calls for photo message, got %d", tracker.textCalls)
+	}
+}
+
+func Test_SendMessage_NonPhotoMedia(t *testing.T) {
+	tracker := &trackingSender{}
+	conv := converter.New()
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	m := &Migrator{sender: tracker, converter: conv, log: log}
+
+	msg := models.Message{
+		ID:        4,
+		Author:    "Dave",
+		Timestamp: time.Now(),
+		RawParts:  []models.TextPart{{Text: "Video"}},
+		Media:     []models.MediaFile{{Type: models.MediaVideo, FileName: "video.mp4", FilePath: "files/video.mp4"}},
+	}
+
+	mediaErrors, _, err := m.sendMessage(context.Background(), 42, msg, map[int]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mediaErrors != 0 {
+		t.Errorf("expected 0 media errors, got %d", mediaErrors)
+	}
+	if tracker.mediaCalls != 1 {
+		t.Errorf("expected 1 SendWithMedia call, got %d", tracker.mediaCalls)
+	}
+}
+
+func Test_SendMessage_WithReplyContext(t *testing.T) {
+	tracker := &trackingSender{}
+	conv := converter.New()
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	m := &Migrator{sender: tracker, converter: conv, log: log}
+
+	replyID := 10
+	msg := models.Message{
+		ID:        20,
+		Author:    "Eve",
+		Timestamp: time.Now(),
+		RawParts:  []models.TextPart{{Text: "Reply body"}},
+		ReplyToID: &replyID,
+	}
+	index := map[int]string{10: "original message preview"}
+
+	_, _, err := m.sendMessage(context.Background(), 42, msg, index)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tracker.textCalls != 1 {
+		t.Errorf("expected 1 SendText call, got %d", tracker.textCalls)
+	}
+}
+
 // photoFailSender fails on SendWithPhoto but succeeds on SendText.
 type photoFailSender struct {
 	textMessages []sentMessage
 }
+
+func (s *photoFailSender) Close() error { return nil }
 
 func (s *photoFailSender) SendText(_ context.Context, chatID int64, text string) error {
 	s.textMessages = append(s.textMessages, sentMessage{chatID: chatID, text: text})
@@ -480,4 +932,240 @@ func (s *photoFailSender) SendWithPhoto(_ context.Context, _ int64, _ string, _ 
 
 func (s *photoFailSender) SendWithMedia(_ context.Context, _ int64, _ string, _ string, _ models.MediaType) error {
 	return fmt.Errorf("media upload failed")
+}
+
+// --- SetPauseCh coverage ---
+
+func Test_SetPauseCh_AssignsChannel(t *testing.T) {
+	conv := converter.New()
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	m := New(newMockSender(-1), conv, "/tmp/cursor_test.json", log)
+
+	ch := make(chan struct{}, 1)
+	m.SetPauseCh(ch)
+
+	if m.pauseCh != ch {
+		t.Error("SetPauseCh did not assign the channel")
+	}
+}
+
+// --- sendMessage: additional media attachment path ---
+
+func Test_SendMessage_MultipleMediaAttachments(t *testing.T) {
+	tracker := &trackingSender{}
+	conv := converter.New()
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	m := &Migrator{sender: tracker, converter: conv, log: log}
+
+	msg := models.Message{
+		ID:        5,
+		Author:    "Frank",
+		Timestamp: time.Now(),
+		RawParts:  []models.TextPart{{Text: "Two photos"}},
+		Media: []models.MediaFile{
+			{Type: models.MediaPhoto, FileName: "a.jpg", FilePath: "photos/a.jpg"},
+			{Type: models.MediaPhoto, FileName: "b.jpg", FilePath: "photos/b.jpg"},
+		},
+	}
+
+	mediaErrors, _, err := m.sendMessage(context.Background(), 42, msg, map[int]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mediaErrors != 0 {
+		t.Errorf("expected 0 media errors, got %d", mediaErrors)
+	}
+	// First photo sent with SendWithPhoto, second also with SendWithPhoto
+	if tracker.photoCalls != 2 {
+		t.Errorf("expected 2 SendWithPhoto calls, got %d", tracker.photoCalls)
+	}
+}
+
+func Test_SendMessage_MultipleMediaWithNonPhoto(t *testing.T) {
+	tracker := &trackingSender{}
+	conv := converter.New()
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	m := &Migrator{sender: tracker, converter: conv, log: log}
+
+	// First is a photo (SendWithPhoto), second is a video (SendWithMedia)
+	msg := models.Message{
+		ID:        6,
+		Author:    "Grace",
+		Timestamp: time.Now(),
+		RawParts:  []models.TextPart{{Text: "Mixed media"}},
+		Media: []models.MediaFile{
+			{Type: models.MediaPhoto, FileName: "cover.jpg", FilePath: "photos/cover.jpg"},
+			{Type: models.MediaVideo, FileName: "clip.mp4", FilePath: "videos/clip.mp4"},
+		},
+	}
+
+	mediaErrors, _, err := m.sendMessage(context.Background(), 42, msg, map[int]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mediaErrors != 0 {
+		t.Errorf("expected 0 media errors, got %d", mediaErrors)
+	}
+	if tracker.photoCalls != 1 {
+		t.Errorf("expected 1 SendWithPhoto call, got %d", tracker.photoCalls)
+	}
+	if tracker.mediaCalls != 1 {
+		t.Errorf("expected 1 SendWithMedia call for video, got %d", tracker.mediaCalls)
+	}
+}
+
+// stickerAdditionalSender tracks calls and sends photo alongside sticker media.
+// This checks the additional media loop for sticker type.
+func Test_SendMessage_AdditionalStickerMediaViaPhotoPath(t *testing.T) {
+	tracker := &trackingSender{}
+	conv := converter.New()
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	m := &Migrator{sender: tracker, converter: conv, log: log}
+
+	// A message with two media items where first is photo and second is sticker type
+	// (tests the MediaSticker branch in the additional-media loop)
+	msg := models.Message{
+		ID:        7,
+		Author:    "Hank",
+		Timestamp: time.Now(),
+		RawParts:  []models.TextPart{{Text: "Photo + sticker"}},
+		Media: []models.MediaFile{
+			{Type: models.MediaPhoto, FileName: "photo.jpg", FilePath: "photos/photo.jpg"},
+			{Type: models.MediaSticker, FileName: "sticker.webp", FilePath: "stickers/s.webp"},
+		},
+	}
+
+	_, _, err := m.sendMessage(context.Background(), 42, msg, map[int]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// First photo → SendWithPhoto; second sticker → also SendWithPhoto (per switch in additional loop)
+	if tracker.photoCalls != 2 {
+		t.Errorf("expected 2 SendWithPhoto calls (photo + sticker), got %d", tracker.photoCalls)
+	}
+}
+
+// --- cursor.Save error path: write to read-only directory ---
+
+func Test_CursorSave_FailsOnReadOnlyDir(t *testing.T) {
+	dir := t.TempDir()
+	cursorFile := filepath.Join(dir, "cursor.json")
+	cm := NewCursorManager(cursorFile)
+	cm.Update("chat", 1, 10, 1)
+
+	// Make directory read-only so Save cannot create temp file
+	if err := os.Chmod(dir, 0555); err != nil {
+		t.Skip("cannot change directory permissions, skipping")
+	}
+	defer os.Chmod(dir, 0755)
+
+	err := cm.Save()
+	if err == nil {
+		t.Error("expected error when saving to read-only directory, got nil")
+	}
+}
+
+// --- migrate: filter applied path ---
+
+func Test_MigrateAll_WithFilterType(t *testing.T) {
+	dir := t.TempDir()
+
+	// Export with 3 text messages + 1 photo message
+	exportData := `{
+		"name": "Filter Chat",
+		"type": "personal_chat",
+		"id": 777,
+		"messages": [
+			{
+				"id": 1, "type": "message",
+				"date": "2026-03-14T10:00:00", "date_unixtime": "1773741600",
+				"from": "User1", "from_id": "user1", "text": "Text 1"
+			},
+			{
+				"id": 2, "type": "message",
+				"date": "2026-03-14T10:01:00", "date_unixtime": "1773741660",
+				"from": "User2", "from_id": "user2", "text": "Text 2"
+			},
+			{
+				"id": 3, "type": "message",
+				"date": "2026-03-14T10:02:00", "date_unixtime": "1773741720",
+				"from": "User3", "from_id": "user3",
+				"text": "Photo caption",
+				"photo": "photos/img.jpg"
+			}
+		]
+	}`
+	exportPath := filepath.Join(dir, "result.json")
+	if err := os.WriteFile(exportPath, []byte(exportData), 0644); err != nil {
+		t.Fatalf("write export: %v", err)
+	}
+
+	sender := newMockSender(-1)
+	m, _ := newTestMigrator(t, sender, dir)
+
+	// FilterType="text" should skip the photo message, sending only 2 text messages
+	stats, err := m.MigrateAll(context.Background(), []models.ChatMapping{
+		{
+			Name:         "filter-test",
+			TGExportPath: exportPath,
+			MaxChatID:    777,
+			FilterType:   "text",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stats.Sent != 2 {
+		t.Errorf("expected Sent=2 (text-only filter), got %d", stats.Sent)
+	}
+	if len(sender.messages) != 2 {
+		t.Errorf("expected 2 messages sent, got %d", len(sender.messages))
+	}
+}
+
+func Test_MigrateAll_WithFilterMonths(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build export with one very old message and one recent message
+	// The old timestamp uses a date 2 years ago
+	exportData := `{
+		"name": "Month Filter Chat",
+		"type": "personal_chat",
+		"id": 888,
+		"messages": [
+			{
+				"id": 1, "type": "message",
+				"date": "2020-01-01T10:00:00", "date_unixtime": "1577872800",
+				"from": "User1", "from_id": "user1", "text": "Old message"
+			},
+			{
+				"id": 2, "type": "message",
+				"date": "2026-03-14T10:00:00", "date_unixtime": "1773741600",
+				"from": "User2", "from_id": "user2", "text": "Recent message"
+			}
+		]
+	}`
+	exportPath := filepath.Join(dir, "result.json")
+	if err := os.WriteFile(exportPath, []byte(exportData), 0644); err != nil {
+		t.Fatalf("write export: %v", err)
+	}
+
+	sender := newMockSender(-1)
+	m, _ := newTestMigrator(t, sender, dir)
+
+	// FilterMonths=3 should only send the recent message
+	stats, err := m.MigrateAll(context.Background(), []models.ChatMapping{
+		{
+			Name:         "month-filter-test",
+			TGExportPath: exportPath,
+			MaxChatID:    888,
+			FilterMonths: 3,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stats.Sent != 1 {
+		t.Errorf("expected Sent=1 (recent only), got %d", stats.Sent)
+	}
 }
