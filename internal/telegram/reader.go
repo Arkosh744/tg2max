@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"strconv"
 	"time"
 
@@ -93,6 +94,7 @@ func (r *Reader) convertMessage(msg tgMessage) (models.Message, error) {
 		AuthorID:      msg.FromID,
 		ForwardedFrom: msg.ForwardedFrom,
 		ReplyToID:     msg.ReplyToMsgID,
+		StickerEmoji:  msg.StickerEmoji,
 	}
 
 	for _, part := range msg.Text.Parts {
@@ -100,6 +102,29 @@ func (r *Reader) convertMessage(msg tgMessage) (models.Message, error) {
 			Type: part.Type,
 			Text: part.Text,
 			Href: part.Href,
+		})
+	}
+
+	if msg.Poll != nil {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "📊 Опрос: %s", msg.Poll.Question)
+		for _, answer := range msg.Poll.Answers {
+			fmt.Fprintf(&sb, "\n  • %s (%d)", answer.Text, answer.Voters)
+		}
+		m.RawParts = append(m.RawParts, models.TextPart{Text: sb.String()})
+	}
+
+	if msg.Contact != nil {
+		c := msg.Contact
+		name := strings.TrimSpace(c.FirstName + " " + c.LastName)
+		m.RawParts = append(m.RawParts, models.TextPart{
+			Text: fmt.Sprintf("👤 Контакт: %s, %s", name, c.PhoneNumber),
+		})
+	}
+
+	if msg.Location != nil {
+		m.RawParts = append(m.RawParts, models.TextPart{
+			Text: fmt.Sprintf("📍 Геолокация: %g, %g", msg.Location.Latitude, msg.Location.Longitude),
 		})
 	}
 
@@ -126,23 +151,40 @@ func (r *Reader) parseTimestamp(msg tgMessage) (time.Time, error) {
 
 func (r *Reader) attachMedia(m *models.Message, msg tgMessage) {
 	if msg.Photo != "" {
-		m.Media = append(m.Media, models.MediaFile{
-			Type:     models.MediaPhoto,
-			FilePath: filepath.Join(r.baseDir, msg.Photo),
-			FileName: filepath.Base(msg.Photo),
-			MimeType: msg.MimeType,
-		})
+		if path, err := r.safeMediaPath(msg.Photo); err == nil {
+			m.Media = append(m.Media, models.MediaFile{
+				Type:     models.MediaPhoto,
+				FilePath: path,
+				FileName: filepath.Base(msg.Photo),
+				MimeType: msg.MimeType,
+			})
+		}
 	}
 
 	if msg.File != "" && msg.Photo == "" {
-		mediaType := r.resolveMediaType(msg.MediaType)
-		m.Media = append(m.Media, models.MediaFile{
-			Type:     mediaType,
-			FilePath: filepath.Join(r.baseDir, msg.File),
-			FileName: filepath.Base(msg.File),
-			MimeType: msg.MimeType,
-		})
+		if path, err := r.safeMediaPath(msg.File); err == nil {
+			mediaType := r.resolveMediaType(msg.MediaType)
+			m.Media = append(m.Media, models.MediaFile{
+				Type:     mediaType,
+				FilePath: path,
+				FileName: filepath.Base(msg.File),
+				MimeType: msg.MimeType,
+			})
+		}
 	}
+}
+
+// safeMediaPath validates that the media path stays within the export directory.
+func (r *Reader) safeMediaPath(rawPath string) (string, error) {
+	if filepath.IsAbs(rawPath) {
+		return "", fmt.Errorf("absolute media path rejected: %s", rawPath)
+	}
+	joined := filepath.Join(r.baseDir, rawPath)
+	cleaned := filepath.Clean(joined)
+	if !strings.HasPrefix(cleaned, filepath.Clean(r.baseDir)+string(os.PathSeparator)) {
+		return "", fmt.Errorf("media path escapes export dir: %s", rawPath)
+	}
+	return cleaned, nil
 }
 
 func (r *Reader) resolveMediaType(tgType string) models.MediaType {

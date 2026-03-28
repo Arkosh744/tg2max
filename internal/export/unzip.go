@@ -7,7 +7,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
+)
+
+const (
+	maxFileSize  = 2 << 30  // 2 GiB per file
+	maxTotalSize = 5 << 30  // 5 GiB total extracted
+	maxFileCount = 100_000  // max entries in ZIP
 )
 
 // Unzip extracts a ZIP file to destDir and returns the path to result.json.
@@ -19,7 +27,12 @@ func Unzip(zipPath, destDir string) (string, error) {
 	}
 	defer r.Close()
 
+	if len(r.File) > maxFileCount {
+		return "", fmt.Errorf("zip contains too many files: %d (max %d)", len(r.File), maxFileCount)
+	}
+
 	var resultJSON string
+	var totalExtracted int64
 
 	for _, f := range r.File {
 		// Security: prevent zip slip (path traversal)
@@ -41,8 +54,13 @@ func Unzip(zipPath, destDir string) (string, error) {
 		}
 
 		// Extract file
-		if err := extractFile(f, target); err != nil {
+		n, err := extractFile(f, target)
+		if err != nil {
 			return "", err
+		}
+		totalExtracted += n
+		if totalExtracted > maxTotalSize {
+			return "", fmt.Errorf("zip extraction exceeded total size limit (%d bytes)", maxTotalSize)
 		}
 
 		// Track result.json
@@ -58,34 +76,53 @@ func Unzip(zipPath, destDir string) (string, error) {
 	return resultJSON, nil
 }
 
-func extractFile(f *zip.File, target string) error {
+func extractFile(f *zip.File, target string) (int64, error) {
 	rc, err := f.Open()
 	if err != nil {
-		return fmt.Errorf("open zip entry %s: %w", f.Name, err)
+		return 0, fmt.Errorf("open zip entry %s: %w", f.Name, err)
 	}
 	defer rc.Close()
 
 	out, err := os.Create(target)
 	if err != nil {
-		return fmt.Errorf("create file %s: %w", target, err)
+		return 0, fmt.Errorf("create file %s: %w", target, err)
 	}
 	defer out.Close()
 
-	// Limit extraction size to 2GB to prevent zip bombs
-	if _, err := io.Copy(out, io.LimitReader(rc, 2<<30)); err != nil {
-		return fmt.Errorf("extract %s: %w", f.Name, err)
+	lr := &io.LimitedReader{R: rc, N: maxFileSize + 1}
+	n, err := io.Copy(out, lr)
+	if err != nil {
+		return n, fmt.Errorf("extract %s: %w", f.Name, err)
+	}
+	if lr.N == 0 {
+		return n, fmt.Errorf("file %s exceeds size limit (%d bytes)", f.Name, maxFileSize)
 	}
 
-	return nil
+	return n, nil
 }
 
 // ExportInfo holds summary info about a Telegram export.
 type ExportInfo struct {
-	Messages  int
-	Photos    int
-	Videos    int
-	Documents int
-	Other     int
+	ChatName     string
+	Messages     int
+	Photos       int
+	Videos       int
+	Documents    int
+	Other        int
+	FirstDate    string // "2 янв 2020"
+	LastDate     string // "15 мар 2026"
+	MissingMedia int    // media files referenced but not found on disk
+}
+
+var ruMonths = [12]string{"янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"}
+
+func formatDate(unixStr string) string {
+	unix, err := strconv.ParseInt(unixStr, 10, 64)
+	if err != nil || unix == 0 {
+		return ""
+	}
+	t := time.Unix(unix, 0)
+	return fmt.Sprintf("%d %s %d", t.Day(), ruMonths[t.Month()-1], t.Year())
 }
 
 // Analyze reads result.json and returns export statistics.
@@ -96,38 +133,65 @@ func Analyze(resultJSONPath string) (ExportInfo, error) {
 	}
 
 	var export struct {
+		Name     string `json:"name"`
 		Messages []struct {
-			Type      string `json:"type"`
-			Photo     string `json:"photo"`
-			File      string `json:"file"`
-			MediaType string `json:"media_type"`
+			Type         string `json:"type"`
+			DateUnixtime string `json:"date_unixtime"`
+			Photo        string `json:"photo"`
+			File         string `json:"file"`
+			MediaType    string `json:"media_type"`
 		} `json:"messages"`
 	}
 
 	if err := json.Unmarshal(data, &export); err != nil {
 		return ExportInfo{}, fmt.Errorf("parse json: %w", err)
 	}
-	// Release raw JSON memory early
-	data = nil
-	_ = data
+	data = nil //nolint:wastedassign
 
+	baseDir := filepath.Dir(resultJSONPath)
 	var info ExportInfo
+	info.ChatName = export.Name
+
+	var firstDate, lastDate string
 	for _, m := range export.Messages {
 		if m.Type != "message" {
 			continue
 		}
 		info.Messages++
+
+		if firstDate == "" && m.DateUnixtime != "" {
+			firstDate = m.DateUnixtime
+		}
+		if m.DateUnixtime != "" {
+			lastDate = m.DateUnixtime
+		}
+
+		mediaPath := ""
 		switch {
 		case m.Photo != "":
 			info.Photos++
+			mediaPath = m.Photo
 		case m.MediaType == "video_file" || m.MediaType == "video_message":
 			info.Videos++
+			mediaPath = m.File
 		case m.File != "" && m.MediaType == "":
 			info.Documents++
+			mediaPath = m.File
 		case m.File != "":
 			info.Other++
+			mediaPath = m.File
+		}
+
+		if mediaPath != "" {
+			fullPath := filepath.Join(baseDir, mediaPath)
+			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+				info.MissingMedia++
+			}
 		}
 	}
+
+	info.FirstDate = formatDate(firstDate)
+	info.LastDate = formatDate(lastDate)
 
 	return info, nil
 }

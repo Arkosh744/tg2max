@@ -13,6 +13,7 @@ type Message struct {
 	Media         []MediaFile
 	ReplyToID     *int
 	ForwardedFrom string
+	StickerEmoji  string
 }
 
 // TextPart represents a piece of text with formatting (from TG export)
@@ -47,4 +48,6 @@ type ChatMapping struct {
 	Name         string
 	TGExportPath string
 	MaxChatID    int64
+	FilterType   string // "all", "text", "media" — empty means all
+	FilterMonths int    // 0 = all time, >0 = last N months
 }
