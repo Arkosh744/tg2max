@@ -1,5 +1,6 @@
 tg2max
 tg2max-bot
+maxclean
 bin/
 config.yaml
 .env
