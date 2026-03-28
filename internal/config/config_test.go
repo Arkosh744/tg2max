@@ -49,7 +49,7 @@ func Test_ValidConfig(t *testing.T) {
 		t.Errorf("MaxToken = %q, want %q", cfg.MaxToken, "test-token-123")
 	}
 	if cfg.RateLimitRPS != 10 {
-		t.Errorf("RateLimitRPS = %d, want %d", cfg.RateLimitRPS, 10)
+		t.Errorf("RateLimitRPS = %v, want %v", cfg.RateLimitRPS, 10)
 	}
 	if cfg.CursorFile != "my_cursor.json" {
 		t.Errorf("CursorFile = %q, want %q", cfg.CursorFile, "my_cursor.json")
@@ -136,8 +136,8 @@ mappings:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.RateLimitRPS != 25 {
-		t.Errorf("RateLimitRPS = %d, want default 25", cfg.RateLimitRPS)
+	if cfg.RateLimitRPS != 1 {
+		t.Errorf("RateLimitRPS = %v, want default 1", cfg.RateLimitRPS)
 	}
 }
 
@@ -179,8 +179,8 @@ mappings:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.RateLimitRPS != 25 {
-		t.Errorf("RateLimitRPS = %d, want default 25 for negative input", cfg.RateLimitRPS)
+	if cfg.RateLimitRPS != 1 {
+		t.Errorf("RateLimitRPS = %v, want default 1 for negative input", cfg.RateLimitRPS)
 	}
 }
 

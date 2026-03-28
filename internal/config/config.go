@@ -9,7 +9,7 @@ import (
 
 type Config struct {
 	MaxToken     string        `yaml:"max_token"`
-	RateLimitRPS int           `yaml:"rate_limit_rps"`
+	RateLimitRPS float64       `yaml:"rate_limit_rps"`
 	CursorFile   string        `yaml:"cursor_file"`
 	Mappings     []ChatMapping `yaml:"mappings"`
 }
@@ -35,7 +35,7 @@ func Load(path string) (*Config, error) {
 		cfg.MaxToken = os.Getenv("MAX_TOKEN")
 	}
 	if cfg.MaxToken == "" {
-		return nil, fmt.Errorf("max_token is required (set in config or MAX_TOKEN env var)")
+		return nil, fmt.Errorf("max_token is required (config or MAX_TOKEN env)")
 	}
 
 	if len(cfg.Mappings) == 0 {
@@ -43,7 +43,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	if cfg.RateLimitRPS <= 0 {
-		cfg.RateLimitRPS = 25
+		cfg.RateLimitRPS = 1
 	}
 
 	if cfg.CursorFile == "" {

@@ -2,6 +2,8 @@ package bot
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,13 +11,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-
 	maxbotapi "github.com/max-messenger/max-bot-api-client-go"
+	"github.com/max-messenger/max-bot-api-client-go/schemes"
 
 	"github.com/arkosh/tg2max/internal/converter"
 	"github.com/arkosh/tg2max/internal/export"
@@ -26,23 +29,35 @@ import (
 )
 
 type Bot struct {
-	api      *tgbotapi.BotAPI
-	sessions *SessionStore
-	maxToken string
-	rps      int
-	tempDir  string
-	log      *slog.Logger
+	api            *tgbotapi.BotAPI
+	sessions       *SessionStore
+	maxToken       string
+	rps            float64
+	tempDir        string
+	tgAPIEndpoint  string
+	tgAPIFilesDir  string // host path mapped to /var/lib/telegram-bot-api in container
+	allowedUserIDs map[int64]struct{}
+	log            *slog.Logger
 }
 
 type Config struct {
-	TelegramToken string
-	MaxToken      string
-	RateLimitRPS  int
-	TempDir       string
+	TelegramToken  string
+	MaxToken       string
+	RateLimitRPS   float64
+	TempDir        string
+	TGAPIEndpoint  string  // Local Bot API server URL, e.g. "http://localhost:8081"
+	TGAPIFilesDir  string  // Host path to local Bot API files volume
+	AllowedUserIDs []int64 // if empty, open to everyone (NOT recommended for production)
 }
 
 func New(cfg Config, log *slog.Logger) (*Bot, error) {
-	api, err := tgbotapi.NewBotAPI(cfg.TelegramToken)
+	var api *tgbotapi.BotAPI
+	var err error
+	if cfg.TGAPIEndpoint != "" {
+		api, err = tgbotapi.NewBotAPIWithAPIEndpoint(cfg.TelegramToken, cfg.TGAPIEndpoint+"/bot%s/%s")
+	} else {
+		api, err = tgbotapi.NewBotAPI(cfg.TelegramToken)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create telegram bot: %w", err)
 	}
@@ -54,21 +69,38 @@ func New(cfg Config, log *slog.Logger) (*Bot, error) {
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
 	if cfg.RateLimitRPS <= 0 {
-		cfg.RateLimitRPS = 25
+		cfg.RateLimitRPS = 1
+	}
+
+	allowed := make(map[int64]struct{}, len(cfg.AllowedUserIDs))
+	for _, id := range cfg.AllowedUserIDs {
+		allowed[id] = struct{}{}
 	}
 
 	return &Bot{
-		api:      api,
-		sessions: NewSessionStore(),
-		maxToken: cfg.MaxToken,
-		rps:      cfg.RateLimitRPS,
-		tempDir:  cfg.TempDir,
-		log:      log,
+		api:            api,
+		sessions:       NewSessionStore(),
+		maxToken:       cfg.MaxToken,
+		rps:            cfg.RateLimitRPS,
+		tempDir:        cfg.TempDir,
+		tgAPIEndpoint:  cfg.TGAPIEndpoint,
+		tgAPIFilesDir:  cfg.TGAPIFilesDir,
+		allowedUserIDs: allowed,
+		log:            log,
 	}, nil
+}
+
+func (b *Bot) isAuthorized(userID int64) bool {
+	if len(b.allowedUserIDs) == 0 {
+		return true
+	}
+	_, ok := b.allowedUserIDs[userID]
+	return ok
 }
 
 func (b *Bot) Run(ctx context.Context) error {
 	b.log.Info("bot started", "username", b.api.Self.UserName)
+	b.sessions.StartCleanup(ctx)
 
 	// Register bot commands in Telegram menu
 	commands := tgbotapi.NewSetMyCommands(
@@ -76,6 +108,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		tgbotapi.BotCommand{Command: "help", Description: "Справка"},
 		tgbotapi.BotCommand{Command: "status", Description: "Текущий статус"},
 		tgbotapi.BotCommand{Command: "cancel", Description: "Отменить миграцию"},
+		tgbotapi.BotCommand{Command: "reset", Description: "Сбросить сессию"},
 	)
 	b.api.Request(commands)
 
@@ -119,6 +152,7 @@ func keyboardAwaitingConfirm() tgbotapi.ReplyKeyboardMarkup {
 			tgbotapi.NewKeyboardButton("👁 Предпросмотр"),
 		),
 		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("🔄 Сменить чат"),
 			tgbotapi.NewKeyboardButton("❌ Отмена"),
 		),
 	)
@@ -127,8 +161,23 @@ func keyboardAwaitingConfirm() tgbotapi.ReplyKeyboardMarkup {
 func keyboardMigrating() tgbotapi.ReplyKeyboardMarkup {
 	return tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("❌ Отменить миграцию"),
+			tgbotapi.NewKeyboardButton("⏸ Пауза"),
 			tgbotapi.NewKeyboardButton("📊 Статус"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("❌ Отменить миграцию"),
+		),
+	)
+}
+
+func keyboardPaused() tgbotapi.ReplyKeyboardMarkup {
+	return tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("▶️ Продолжить"),
+			tgbotapi.NewKeyboardButton("📊 Статус"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("❌ Отменить миграцию"),
 		),
 	)
 }
@@ -136,6 +185,13 @@ func keyboardMigrating() tgbotapi.ReplyKeyboardMarkup {
 // --- Message routing ---
 
 func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
+	if msg.From == nil {
+		return
+	}
+	if !b.isAuthorized(msg.From.ID) {
+		b.reply(msg.Chat.ID, "Доступ запрещён.")
+		return
+	}
 	b.log.Debug("incoming message", "from", msg.From.ID, "text", msg.Text, "command", msg.Command())
 
 	// Handle commands
@@ -151,6 +207,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.handleStatus(msg)
 		case "cancel":
 			b.handleCancel(msg)
+		case "reset":
+			b.handleReset(msg)
 		default:
 			b.replyWithKeyboard(msg.Chat.ID, "Неизвестная команда. /help", keyboardMain())
 		}
@@ -174,6 +232,15 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	case "❌ Отмена", "❌ Отменить миграцию":
 		b.cancelMigration(msg.Chat.ID, msg.From.ID)
 		return
+	case "⏸ Пауза":
+		b.pauseMigration(msg.Chat.ID, msg.From.ID)
+		return
+	case "▶️ Продолжить":
+		b.resumeMigration(msg.Chat.ID, msg.From.ID)
+		return
+	case "🔄 Сменить чат":
+		b.handleChangeChat(msg)
+		return
 	}
 
 	// ZIP upload
@@ -182,13 +249,18 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
-	// If awaiting chat ID, treat text as chat ID input
+	// State-based text routing
 	sess := b.sessions.Get(msg.From.ID)
-	if sess != nil {
+	if sess != nil && msg.Text != "" {
 		sess.mu.Lock()
 		state := sess.State
 		sess.mu.Unlock()
-		if state == StateAwaitingChatID && msg.Text != "" {
+
+		switch state {
+		case StateAwaitingChatSearch:
+			b.searchMaxChats(msg)
+			return
+		case StateAwaitingChatID:
 			b.parseChatID(msg, sess)
 			return
 		}
@@ -197,6 +269,13 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 
 func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	b.api.Request(tgbotapi.NewCallback(cb.ID, ""))
+
+	if cb.Message == nil || cb.From == nil {
+		return
+	}
+	if !b.isAuthorized(cb.From.ID) {
+		return
+	}
 
 	chatID := cb.Message.Chat.ID
 	userID := cb.From.ID
@@ -213,12 +292,14 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 	case cb.Data == "status":
 		b.showStatus(chatID, userID)
 	case strings.HasPrefix(cb.Data, "select_chat:"):
-		b.handleSelectChat(chatID, userID, cb.Data)
+		b.handleSelectChat(chatID, userID, cb)
+	case strings.HasPrefix(cb.Data, "filter:"):
+		b.handleFilterCallback(chatID, userID, cb.Data)
 	}
 }
 
-func (b *Bot) handleSelectChat(tgChatID int64, userID int64, data string) {
-	idStr := strings.TrimPrefix(data, "select_chat:")
+func (b *Bot) handleSelectChat(tgChatID int64, userID int64, cb *tgbotapi.CallbackQuery) {
+	idStr := strings.TrimPrefix(cb.Data, "select_chat:")
 	maxChatID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		b.reply(tgChatID, "Ошибка выбора чата.")
@@ -231,20 +312,110 @@ func (b *Bot) handleSelectChat(tgChatID int64, userID int64, data string) {
 		return
 	}
 
+	// Extract the chat name from the pressed inline button text.
+	chatName := fmt.Sprintf("Chat %d", maxChatID)
+	if cb.Message != nil && cb.Message.ReplyMarkup != nil {
+		for _, row := range cb.Message.ReplyMarkup.InlineKeyboard {
+			for _, btn := range row {
+				if btn.CallbackData != nil && *btn.CallbackData == cb.Data {
+					chatName = btn.Text
+					break
+				}
+			}
+		}
+	}
+
 	sess.mu.Lock()
 	sess.MaxChatID = maxChatID
+	sess.MaxChatName = chatName
+	sess.State = StateAwaitingFilter
 	sess.mu.Unlock()
 
-	b.showPreviewAndConfirm(tgChatID, userID)
+	b.showFilterKeyboard(tgChatID, chatName, maxChatID)
+}
+
+// showFilterKeyboard sends the inline keyboard asking the user which messages to migrate.
+func (b *Bot) showFilterKeyboard(chatID int64, chatName string, maxChatID int64) {
+	text := fmt.Sprintf("Выбран чат: %s (ID: %d)\n\nЧто переносить?", chatName, maxChatID)
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Всё", "filter:all"),
+			tgbotapi.NewInlineKeyboardButtonData("Только текст", "filter:text"),
+			tgbotapi.NewInlineKeyboardButtonData("Только медиа", "filter:media"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("За 3 месяца", "filter:3m"),
+			tgbotapi.NewInlineKeyboardButtonData("За 6 месяцев", "filter:6m"),
+			tgbotapi.NewInlineKeyboardButtonData("За всё время", "filter:all"),
+		),
+	)
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = keyboard
+	b.api.Send(msg)
+}
+
+// handleFilterCallback parses a filter:* callback, saves filter to session, moves to confirm.
+func (b *Bot) handleFilterCallback(chatID int64, userID int64, data string) {
+	sess := b.sessions.Get(userID)
+	if sess == nil {
+		b.reply(chatID, "Сначала отправь ZIP-экспорт.")
+		return
+	}
+
+	token := strings.TrimPrefix(data, "filter:")
+
+	var filterType string
+	var filterMonths int
+
+	switch token {
+	case "text":
+		filterType = "text"
+	case "media":
+		filterType = "media"
+	case "3m":
+		filterMonths = 3
+	case "6m":
+		filterMonths = 6
+	default: // "all" and any unknown value
+		filterType = ""
+		filterMonths = 0
+	}
+
+	sess.mu.Lock()
+	sess.FilterType = filterType
+	sess.FilterMonths = filterMonths
+	sess.State = StateAwaitingConfirm
+	sess.mu.Unlock()
+
+	b.showPreviewAndConfirm(chatID, userID)
 }
 
 // --- Step 0: Start ---
 
 func (b *Bot) handleStart(msg *tgbotapi.Message) {
+	// Don't replace keyboard if migration is running
+	sess := b.sessions.Get(msg.From.ID)
+	if sess != nil {
+		sess.mu.Lock()
+		state := sess.State
+		sess.mu.Unlock()
+		if state == StateMigrating {
+			b.replyWithKeyboard(msg.Chat.ID, "Миграция идёт. Используй кнопки ниже.", keyboardMigrating())
+			return
+		}
+		if state == StatePaused {
+			b.replyWithKeyboard(msg.Chat.ID, "Миграция на паузе. Используй кнопки ниже.", keyboardPaused())
+			return
+		}
+	}
+
 	text := "Привет! Я перенесу историю чата из Telegram в Max.\n\n" +
-		"Отправь мне ZIP-экспорт из Telegram Desktop:\n" +
-		"Чат → ... → Export Chat History → JSON + Media\n\n" +
-		"Заархивируй папку в ZIP и отправь сюда."
+		"Шаг 1: Экспортируй чат в Telegram Desktop\n" +
+		"  Чат → ⋯ → Export Chat History → Format: JSON\n" +
+		"  Включи нужные медиа (фото, видео, файлы)\n\n" +
+		"Шаг 2: Заархивируй полученную папку в ZIP\n\n" +
+		"Шаг 3: Отправь ZIP сюда\n\n" +
+		"Максимальный размер: 512 МБ"
 
 	b.replyWithKeyboard(msg.Chat.ID, text, keyboardMain())
 }
@@ -253,16 +424,20 @@ func (b *Bot) handleHelp(msg *tgbotapi.Message) {
 	text := `Как использовать:
 
 1. Экспортируй чат в Telegram Desktop
-   (... → Export Chat History → JSON)
-2. Заархивируй папку в ZIP
+   Чат → ⋯ → Export Chat History → JSON + медиа
+2. Заархивируй папку в ZIP (макс 512 МБ)
 3. Отправь ZIP сюда
-4. Укажи Max chat ID
+4. Введи название чата в Max для поиска
+   (или числовой ID чата)
 5. Проверь предпросмотр и подтверди
+
+Если миграция прервалась — отправь тот же ZIP повторно, прогресс сохранён.
 
 Команды:
 /setchat <id> — задать Max chat ID вручную
 /status — текущий статус
-/cancel — отменить миграцию`
+/cancel — отменить/сбросить
+/reset — полный сброс сессии`
 	b.reply(msg.Chat.ID, text)
 }
 
@@ -277,53 +452,110 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 
 	sess := b.sessions.GetOrCreate(msg.From.ID)
 	sess.mu.Lock()
-	if sess.State == StateMigrating {
+	if sess.State == StateMigrating || sess.State == StatePaused {
 		sess.mu.Unlock()
 		b.reply(msg.Chat.ID, "Миграция уже идёт. Нажми «Отменить миграцию» или /cancel.")
 		return
 	}
 	sess.mu.Unlock()
 
+	const maxZipSize = 512 * 1024 * 1024 // 512 MiB
+	if doc.FileSize > maxZipSize {
+		b.reply(msg.Chat.ID, "Файл слишком большой (макс 512 МБ).")
+		return
+	}
+
 	b.reply(msg.Chat.ID, "⏳ Загружаю и распаковываю...")
 
 	file, err := b.api.GetFile(tgbotapi.FileConfig{FileID: doc.FileID})
 	if err != nil {
-		b.reply(msg.Chat.ID, fmt.Sprintf("Ошибка: %s", err))
+		b.log.Error("get file failed", "error", err)
+		b.reply(msg.Chat.ID, "Ошибка получения файла. Попробуй ещё раз.")
 		return
 	}
 
 	userDir := filepath.Join(b.tempDir, fmt.Sprintf("user_%d", msg.From.ID))
+
+	// Preserve cursor.json across re-uploads so migration can resume.
+	// cursor.json sits next to result.json inside the export subdirectory.
+	cursorBackup := filepath.Join(b.tempDir, fmt.Sprintf("cursor_%d.json", msg.From.ID))
+	if sess := b.sessions.Get(msg.From.ID); sess != nil && sess.ExportPath != "" {
+		oldCursor := filepath.Join(filepath.Dir(sess.ExportPath), "cursor.json")
+		if data, err := os.ReadFile(oldCursor); err == nil {
+			os.WriteFile(cursorBackup, data, 0644)
+		}
+	}
+
 	os.RemoveAll(userDir)
-	os.MkdirAll(userDir, 0755)
+	if err := os.MkdirAll(userDir, 0755); err != nil {
+		b.log.Error("create user dir failed", "error", err)
+		b.reply(msg.Chat.ID, "Ошибка создания рабочей директории.")
+		return
+	}
 
 	zipPath := filepath.Join(userDir, "export.zip")
-	if err := downloadFile(file.Link(b.api.Token), zipPath); err != nil {
-		b.reply(msg.Chat.ID, fmt.Sprintf("Ошибка скачивания: %s", err))
+	b.log.Debug("downloading file", "filePath", file.FilePath)
+	if err := b.resolveFile(file.FilePath, zipPath); err != nil {
+		b.log.Error("file download failed", "error", err)
+		b.reply(msg.Chat.ID, "Ошибка скачивания файла. Попробуй ещё раз.")
 		return
 	}
 
 	extractDir := filepath.Join(userDir, "extracted")
 	resultJSON, err := export.Unzip(zipPath, extractDir)
 	if err != nil {
-		b.reply(msg.Chat.ID, fmt.Sprintf("Ошибка распаковки: %s\n\nУбедись что в архиве есть result.json", err))
+		b.log.Error("unzip failed", "error", err)
+		b.reply(msg.Chat.ID, "Ошибка распаковки. Убедись что в архиве есть result.json.")
 		return
 	}
 	os.Remove(zipPath)
 
+	// Check if the uploaded ZIP contains the same export as the current session.
+	// If hash matches and the export directory still exists, skip re-analysis and resume.
+	newHash := hashFile(resultJSON)
+	if newHash != "" {
+		sess.mu.Lock()
+		oldHash := sess.ExportHash
+		oldExportDir := sess.ExportDir
+		sess.mu.Unlock()
+
+		if oldHash != "" && oldHash == newHash {
+			if _, statErr := os.Stat(oldExportDir); statErr == nil {
+				b.reply(msg.Chat.ID, "Экспорт уже загружен, продолжаю с сохранённого прогресса.")
+				return
+			}
+		}
+	}
+
+	// Restore cursor.json next to result.json so migration resumes
+	cursorRestored := false
+	restoredCursor := filepath.Join(filepath.Dir(resultJSON), "cursor.json")
+	if data, err := os.ReadFile(cursorBackup); err == nil {
+		os.WriteFile(restoredCursor, data, 0644)
+		os.Remove(cursorBackup)
+		cursorRestored = true
+		b.log.Info("cursor restored, migration will resume")
+	}
+
 	info, err := export.Analyze(resultJSON)
 	if err != nil {
-		b.reply(msg.Chat.ID, fmt.Sprintf("Ошибка анализа: %s", err))
+		b.log.Error("analyze failed", "error", err)
+		b.reply(msg.Chat.ID, "Ошибка анализа экспорта. Проверь формат result.json.")
 		return
 	}
 
 	sess.mu.Lock()
 	sess.ExportPath = resultJSON
 	sess.ExportDir = extractDir
-	sess.State = StateAwaitingChatID
+	sess.ExportHash = newHash
+	sess.State = StateAwaitingChatSearch
 	sess.mu.Unlock()
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "✅ Экспорт загружен!\n\n")
+	if info.ChatName != "" {
+		fmt.Fprintf(&sb, "💬 Чат: %s\n", info.ChatName)
+	}
 	fmt.Fprintf(&sb, "📨 Сообщений: %d\n", info.Messages)
 	if info.Photos > 0 {
 		fmt.Fprintf(&sb, "🖼 Фото: %d\n", info.Photos)
@@ -334,35 +566,124 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 	if info.Documents > 0 {
 		fmt.Fprintf(&sb, "📄 Документов: %d\n", info.Documents)
 	}
+	if info.FirstDate != "" && info.LastDate != "" {
+		fmt.Fprintf(&sb, "📅 Период: %s — %s\n", info.FirstDate, info.LastDate)
+	}
+	if info.MissingMedia > 0 {
+		fmt.Fprintf(&sb, "⚠️ Медиа-файлов не найдено: %d (будут отправлены как текст)\n", info.MissingMedia)
+	}
 
-	// Try to fetch Max chats for inline buttons
-	chats := b.fetchMaxChats()
-	if len(chats) > 0 {
-		sb.WriteString("\nВыбери чат в Max для переноса:")
-		reply := tgbotapi.NewMessage(msg.Chat.ID, sb.String())
-		var rows [][]tgbotapi.InlineKeyboardButton
+	if cursorRestored {
+		sb.WriteString("\n🔄 Прогресс предыдущей миграции восстановлен.\n")
+	}
+
+	// Auto-search Max chats by TG chat name
+	if info.ChatName != "" {
+		chats := b.fetchMaxChats()
+		queryLower := strings.ToLower(info.ChatName)
+		var matched []maxChat
 		for _, c := range chats {
-			label := c.title
-			if label == "" {
-				label = fmt.Sprintf("Chat %d", c.id)
+			if strings.Contains(strings.ToLower(c.title), queryLower) {
+				matched = append(matched, c)
 			}
+		}
+
+		if len(matched) == 1 {
+			sb.WriteString(fmt.Sprintf("\n🎯 Найден чат в Max: %s\n", matched[0].title))
+			var rows [][]tgbotapi.InlineKeyboardButton
 			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData(
-					label,
-					fmt.Sprintf("select_chat:%d", c.id),
+					fmt.Sprintf("✅ %s", matched[0].title),
+					fmt.Sprintf("select_chat:%d", matched[0].id),
 				),
 			))
+			reply := tgbotapi.NewMessage(msg.Chat.ID, sb.String())
+			reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+			b.api.Send(reply)
+			return
+		} else if len(matched) > 1 {
+			sb.WriteString("\nНайдено несколько чатов в Max:")
+			var rows [][]tgbotapi.InlineKeyboardButton
+			for _, c := range matched {
+				rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData(c.title, fmt.Sprintf("select_chat:%d", c.id)),
+				))
+			}
+			reply := tgbotapi.NewMessage(msg.Chat.ID, sb.String())
+			reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+			b.api.Send(reply)
+			return
 		}
-		reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
-		b.api.Send(reply)
-	} else {
-		sb.WriteString("\nОтправь Max chat ID (число).\n\n")
-		sb.WriteString("Добавь Max-бота в нужный чат, затем я смогу показать список.")
-		b.reply(msg.Chat.ID, sb.String())
 	}
+
+	sb.WriteString("\nВведи название чата в Max для поиска.\nИли отправь числовой ID чата напрямую.")
+	b.reply(msg.Chat.ID, sb.String())
 }
 
-// --- Step 2: Set chat ID ---
+// --- Step 2: Search / Set chat ID ---
+
+func (b *Bot) searchMaxChats(msg *tgbotapi.Message) {
+	query := strings.TrimSpace(msg.Text)
+
+	// If user typed a number, treat as direct chat ID input
+	if id, err := strconv.ParseInt(query, 10, 64); err == nil {
+		sess := b.sessions.Get(msg.From.ID)
+		if sess == nil {
+			return
+		}
+		chatName := fmt.Sprintf("Chat %d", id)
+		sess.mu.Lock()
+		sess.MaxChatID = id
+		sess.MaxChatName = chatName
+		sess.State = StateAwaitingFilter
+		sess.mu.Unlock()
+		b.showFilterKeyboard(msg.Chat.ID, chatName, id)
+		return
+	}
+
+	chats := b.fetchMaxChats()
+	if len(chats) == 0 {
+		b.reply(msg.Chat.ID, "Не удалось получить список чатов Max.\nОтправь числовой ID чата напрямую.")
+		sess := b.sessions.Get(msg.From.ID)
+		if sess != nil {
+			sess.mu.Lock()
+			sess.State = StateAwaitingChatID
+			sess.mu.Unlock()
+		}
+		return
+	}
+
+	queryLower := strings.ToLower(query)
+	var matched []maxChat
+	for _, c := range chats {
+		if strings.Contains(strings.ToLower(c.title), queryLower) {
+			matched = append(matched, c)
+		}
+	}
+
+	if len(matched) == 0 {
+		b.reply(msg.Chat.ID, fmt.Sprintf("Чатов с названием «%s» не найдено.\nПопробуй другое название или отправь числовой ID.", query))
+		return
+	}
+
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, c := range matched {
+		label := c.title
+		if label == "" {
+			label = fmt.Sprintf("Chat %d", c.id)
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				label,
+				fmt.Sprintf("select_chat:%d", c.id),
+			),
+		))
+	}
+
+	reply := tgbotapi.NewMessage(msg.Chat.ID, fmt.Sprintf("Найдено чатов: %d. Выбери:", len(matched)))
+	reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.api.Send(reply)
+}
 
 func (b *Bot) handleSetChat(msg *tgbotapi.Message) {
 	args := msg.CommandArguments()
@@ -404,7 +725,8 @@ func (b *Bot) showPreviewAndConfirm(chatID int64, userID int64) {
 	reader := telegram.NewReader(sess.ExportPath)
 	result, err := reader.ReadAll(context.Background())
 	if err != nil {
-		b.reply(chatID, fmt.Sprintf("Ошибка чтения: %s", err))
+		b.log.Error("read export for preview failed", "error", err)
+		b.reply(chatID, "Ошибка чтения экспорта. Попробуй загрузить ZIP заново.")
 		return
 	}
 
@@ -413,15 +735,62 @@ func (b *Bot) showPreviewAndConfirm(chatID int64, userID int64) {
 	limit := min(3, total)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Max chat ID: %d\n", sess.MaxChatID)
-	fmt.Fprintf(&sb, "Всего сообщений: %d\n\n", total)
-	sb.WriteString("Последние сообщения (так будут в Max):\n\n")
+	sess.mu.Lock()
+	chatName := sess.MaxChatName
+	chatIDVal := sess.MaxChatID
+	filterType := sess.FilterType
+	filterMonths := sess.FilterMonths
+	sess.mu.Unlock()
 
-	start := total - limit
-	for i := start; i < total; i++ {
-		sb.WriteString(conv.FormatForMax(result.Messages[i]))
+	if chatName != "" {
+		fmt.Fprintf(&sb, "Чат Max: %s (ID: %d)\n", chatName, chatIDVal)
+	} else {
+		fmt.Fprintf(&sb, "Max chat ID: %d\n", chatIDVal)
+	}
+	fmt.Fprintf(&sb, "Всего сообщений: %d\n", total)
+
+	// Show active filter description
+	switch {
+	case filterType == "text":
+		sb.WriteString("Фильтр: только текст\n")
+	case filterType == "media":
+		sb.WriteString("Фильтр: только медиа\n")
+	case filterMonths > 0:
+		fmt.Fprintf(&sb, "Фильтр: за последние %d мес.\n", filterMonths)
+	}
+
+	// Run dry-run analysis for accurate stats and ETA
+	dryStats := migrator.DryRun(result.Messages, conv)
+
+	// Duration estimate based on actual output requests (more accurate than raw message count)
+	estimateSec := float64(dryStats.OutputMessages) / b.rps
+	if estimateSec > 60 {
+		fmt.Fprintf(&sb, "⏱ Ожидаемое время: ~%s\n", (time.Duration(estimateSec) * time.Second).Round(time.Minute))
+	}
+
+	sb.WriteString("\nПервые сообщения (так будут в Max):\n\n")
+
+	for i := 0; i < limit; i++ {
+		sb.WriteString(conv.FormatForMax(result.Messages[i], ""))
 		sb.WriteString("\n---\n")
 	}
+
+	// Dry-run statistics block
+	fmt.Fprintf(&sb, "\n📊 Анализ миграции:\n")
+	fmt.Fprintf(&sb, "  Входных сообщений: %d\n", dryStats.TotalInput)
+	fmt.Fprintf(&sb, "  Будет отправлено: %d запросов\n", dryStats.OutputMessages)
+	if dryStats.GroupedCount > 0 {
+		fmt.Fprintf(&sb, "  Сгруппировано: %d → меньше запросов\n", dryStats.GroupedCount)
+	}
+	if dryStats.SplitCount > 0 {
+		fmt.Fprintf(&sb, "  Разбито (длинные): %d\n", dryStats.SplitCount)
+	}
+	fmt.Fprintf(&sb, "  Текстовых: %d, медиа: %d", dryStats.TextOnlyCount, dryStats.MediaCount)
+	if dryStats.StickerCount > 0 {
+		fmt.Fprintf(&sb, ", стикеров: %d", dryStats.StickerCount)
+	}
+	sb.WriteString("\n")
+
 	sb.WriteString("\nНажми «Подтвердить перенос» для начала.")
 
 	b.replyWithKeyboard(chatID, sb.String(), keyboardAwaitingConfirm())
@@ -452,10 +821,14 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 		return
 	}
 	sess.State = StateMigrating
-	migCtx, cancel := context.WithCancel(ctx)
+	migCtx, cancel := context.WithTimeout(ctx, 4*time.Hour)
 	sess.Cancel = cancel
 	exportPath := sess.ExportPath
 	maxChatID := sess.MaxChatID
+	filterType := sess.FilterType
+	filterMonths := sess.FilterMonths
+	pauseCh := make(chan struct{}, 1)
+	sess.PauseCh = pauseCh
 	sess.mu.Unlock()
 
 	// Show migrating keyboard
@@ -466,6 +839,11 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 	sent, err := b.api.Send(progressMsg)
 	if err != nil {
 		b.log.Error("failed to send progress message", "error", err)
+		cancel()
+		sess.mu.Lock()
+		sess.State = StateIdle
+		sess.Cancel = nil
+		sess.mu.Unlock()
 		return
 	}
 	progressMsgID := sent.MessageID
@@ -473,32 +851,57 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 
 	go func() {
 		defer func() {
+			cancel()
 			sess.mu.Lock()
+			exportDir := sess.ExportDir
 			sess.State = StateIdle
 			sess.Cancel = nil
+			sess.ExportPath = ""
+			sess.ExportDir = ""
 			sess.mu.Unlock()
-			// Reset keyboard
-			b.replyWithKeyboard(chatID, "Готово.", keyboardMain())
+			if exportDir != "" {
+				os.RemoveAll(filepath.Dir(exportDir))
+			}
+			// Restore main keyboard (final status is in the edited progress message)
+			b.replyWithKeyboard(chatID, "Миграция завершена. Отправь новый ZIP для следующего чата.", keyboardMain())
 		}()
 
-		sender, senderErr := maxbot.NewSender(b.maxToken, b.rps)
+		botSender, senderErr := maxbot.NewSender(b.maxToken, b.rps)
 		if senderErr != nil {
 			b.editMessage(chatID, progressMsgID, fmt.Sprintf("❌ Ошибка Max API: %s", senderErr))
 			return
 		}
 
+		botSender.SetOnRetry(func(attempt int, err error, wait time.Duration) {
+			b.log.Warn("retrying", "attempt", attempt, "wait", wait, "error", err)
+			errStr := err.Error()
+			label := "Ошибка сети"
+			if strings.Contains(errStr, "429") {
+				label = "Rate limit"
+			}
+			b.editMessage(chatID, progressMsgID,
+				fmt.Sprintf("⏳ %s (попытка %d), жду %s...\n\n%s", label, attempt, wait.Round(time.Second), err))
+		})
+
+		b.editMessage(chatID, progressMsgID, "⏳ Перенос запущен, отправляю сообщения...")
+
 		conv := converter.New()
-		mig := migrator.New(sender, conv, cursorFile, b.log)
+		mig := migrator.New(botSender, conv, cursorFile, b.log)
+		mig.SetPauseCh(pauseCh)
 
 		mapping := []models.ChatMapping{{
 			Name:         "bot-migration",
 			TGExportPath: exportPath,
 			MaxChatID:    maxChatID,
+			FilterType:   filterType,
+			FilterMonths: filterMonths,
 		}}
 
 		progressDone := make(chan struct{})
+		defer close(progressDone)
+		startedAt := time.Now()
 		go func() {
-			ticker := time.NewTicker(3 * time.Second)
+			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
 			for {
 				select {
@@ -513,28 +916,92 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 					}
 					pct := sentCount * 100 / total
 					bar := progressBar(pct)
-					text := fmt.Sprintf("Перенос: %s %d%%\n(%d / %d)", bar, pct, sentCount, total)
+					elapsed := time.Since(startedAt).Round(time.Second)
+					extra := ""
+					if sentCount > 0 {
+						speed := float64(sentCount) / time.Since(startedAt).Seconds()
+						remaining := time.Duration(float64(total-sentCount) / speed * float64(time.Second))
+						extra = fmt.Sprintf("\n%.1f msg/s · ~%s осталось", speed, remaining.Round(time.Second))
+					}
+					text := fmt.Sprintf("Перенос: %s %d%%\n(%d / %d) · %s%s", bar, pct, sentCount, total, elapsed, extra)
 					b.editMessage(chatID, progressMsgID, text)
 				}
 			}
 		}()
 
 		stats, migErr := mig.MigrateAll(migCtx, mapping)
-		close(progressDone)
 
 		if migErr != nil {
+			b.log.Error("migration failed", "chat", "bot-migration", "error", migErr, "sent", stats.Sent)
 			b.editMessage(chatID, progressMsgID,
-				fmt.Sprintf("⚠️ Ошибка: %s\n\nОтправлено: %d\nПрогресс сохранён — повтори /start", migErr, stats.Sent))
+				fmt.Sprintf("⚠️ Миграция прервана\n\n"+
+					"Отправлено: %d\n"+
+					"Ошибка: %s\n\n"+
+					"Прогресс сохранён — отправь тот же ZIP чтобы продолжить.", stats.Sent, migErr))
 			return
 		}
 
-		b.editMessage(chatID, progressMsgID,
-			fmt.Sprintf("✅ Перенос завершён!\n\n"+
-				"Отправлено: %d\n"+
-				"Пропущено: %d\n"+
-				"Ошибки медиа: %d\n"+
-				"Время: %s",
-				stats.Sent, stats.Skipped, stats.MediaErrors, stats.Duration.Round(time.Second)))
+		var result strings.Builder
+		fmt.Fprintf(&result, "✅ Перенос завершён!\n\n")
+		fmt.Fprintf(&result, "📨 Отправлено: %d\n", stats.Sent)
+		if stats.Skipped > 0 {
+			fmt.Fprintf(&result, "⏭ Пропущено (уже были): %d\n", stats.Skipped)
+		}
+		if stats.MediaErrors > 0 {
+			fmt.Fprintf(&result, "⚠️ Ошибки медиа: %d (отправлены как текст)\n", stats.MediaErrors)
+		}
+		fmt.Fprintf(&result, "⏱ Время: %s", stats.Duration.Round(time.Second))
+		if stats.ForwardedCount > 0 {
+			fmt.Fprintf(&result, "\n📤 Пересланных: %d", stats.ForwardedCount)
+		}
+
+		if len(stats.AuthorCounts) > 0 {
+			type authorEntry struct {
+				name  string
+				count int
+			}
+			authors := make([]authorEntry, 0, len(stats.AuthorCounts))
+			for name, count := range stats.AuthorCounts {
+				authors = append(authors, authorEntry{name, count})
+			}
+			sort.Slice(authors, func(i, j int) bool {
+				return authors[i].count > authors[j].count
+			})
+			result.WriteString("\n\nТоп авторов:")
+			limit := 3
+			if len(authors) < limit {
+				limit = len(authors)
+			}
+			for _, a := range authors[:limit] {
+				fmt.Fprintf(&result, "\n  %s — %d", a.name, a.count)
+			}
+		}
+
+		if len(stats.FailedFiles) > 0 {
+			sess.mu.Lock()
+			sess.FailedMediaIDs = nil // reset before storing new failed list
+			sess.mu.Unlock()
+			result.WriteString("\n\n⚠️ Файлы, которые не удалось загрузить как медиа")
+			result.WriteString(" (были отправлены как текст):\n")
+			limit := 10
+			if len(stats.FailedFiles) < limit {
+				limit = len(stats.FailedFiles)
+			}
+			for _, f := range stats.FailedFiles[:limit] {
+				fmt.Fprintf(&result, "  • %s\n", f)
+			}
+			if len(stats.FailedFiles) > 10 {
+				fmt.Fprintf(&result, "  ...и ещё %d файлов\n", len(stats.FailedFiles)-10)
+			}
+			result.WriteString("Повторная попытка: отправь тот же ZIP снова.")
+		}
+
+		b.editMessage(chatID, progressMsgID, result.String())
+
+		// Send an explicit ping for long migrations so the user gets a sound notification.
+		if stats.Duration > 5*time.Minute {
+			b.reply(chatID, fmt.Sprintf("🔔 Миграция завершена! Отправлено: %d, время: %s", stats.Sent, stats.Duration.Round(time.Second)))
+		}
 	}()
 }
 
@@ -554,24 +1021,43 @@ func (b *Bot) showStatus(chatID int64, userID int64) {
 	sess.mu.Lock()
 	state := sess.State
 	maxID := sess.MaxChatID
+	chatName := sess.MaxChatName
 	hasExport := sess.ExportPath != ""
+	filterType := sess.FilterType
+	filterMonths := sess.FilterMonths
 	sess.mu.Unlock()
 
 	states := map[State]string{
-		StateIdle:            "⏸ Ожидание",
-		StateAwaitingExport:  "📦 Жду экспорт",
-		StateAwaitingChatID:  "🔢 Жду Max chat ID",
-		StateAwaitingConfirm: "👁 Жду подтверждение",
-		StateMigrating:       "🚀 Миграция идёт",
+		StateIdle:               "⏸ Ожидание",
+		StateAwaitingChatSearch: "🔍 Жду название чата",
+		StateAwaitingChatID:     "🔢 Жду Max chat ID",
+		StateAwaitingFilter:     "🔽 Жду выбор фильтра",
+		StateAwaitingConfirm:    "👁 Жду подтверждение",
+		StateMigrating:          "🚀 Миграция идёт",
+		StatePaused:             "⏸ Миграция на паузе",
 	}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Статус: %s\n", states[state])
-	fmt.Fprintf(&sb, "Max chat ID: %d\n", maxID)
 	if hasExport {
-		sb.WriteString("Экспорт: ✅ загружен")
+		sb.WriteString("Экспорт: ✅ загружен\n")
 	} else {
-		sb.WriteString("Экспорт: ❌ нет")
+		sb.WriteString("Экспорт: ❌ нет\n")
+	}
+	if maxID != 0 {
+		if chatName != "" {
+			fmt.Fprintf(&sb, "Чат Max: %s (ID: %d)\n", chatName, maxID)
+		} else {
+			fmt.Fprintf(&sb, "Чат Max ID: %d\n", maxID)
+		}
+	}
+	switch {
+	case filterType == "text":
+		sb.WriteString("Фильтр: только текст")
+	case filterType == "media":
+		sb.WriteString("Фильтр: только медиа")
+	case filterMonths > 0:
+		fmt.Fprintf(&sb, "Фильтр: за последние %d мес.", filterMonths)
 	}
 	b.reply(chatID, sb.String())
 }
@@ -588,15 +1074,122 @@ func (b *Bot) cancelMigration(chatID int64, userID int64) {
 	}
 
 	sess.mu.Lock()
-	if sess.State != StateMigrating || sess.Cancel == nil {
+	state := sess.State
+
+	if (state == StateMigrating || state == StatePaused) && sess.Cancel != nil {
+		pauseCh := sess.PauseCh
+		sess.Cancel()
+		// If paused, unblock the migration goroutine so it can observe context cancellation
+		if state == StatePaused && pauseCh != nil {
+			select {
+			case pauseCh <- struct{}{}:
+			default:
+			}
+		}
+		sess.mu.Unlock()
+		b.replyWithKeyboard(chatID, "⏹ Миграция отменена. Прогресс сохранён.", keyboardMain())
+		return
+	}
+
+	// Cancel from any non-idle state resets to idle
+	if state != StateIdle {
+		sess.State = StateIdle
+		sess.MaxChatID = 0
+		sess.MaxChatName = ""
+		sess.mu.Unlock()
+		b.replyWithKeyboard(chatID, "Отменено. Отправь ZIP чтобы начать заново.", keyboardMain())
+		return
+	}
+
+	sess.mu.Unlock()
+	b.reply(chatID, "Нечего отменять.")
+}
+
+func (b *Bot) pauseMigration(chatID int64, userID int64) {
+	sess := b.sessions.Get(userID)
+	if sess == nil {
+		return
+	}
+	sess.mu.Lock()
+	if sess.State != StateMigrating {
 		sess.mu.Unlock()
 		b.reply(chatID, "Нет активной миграции.")
 		return
 	}
-	sess.Cancel()
+	sess.State = StatePaused
+	pauseCh := sess.PauseCh
+	sess.mu.Unlock()
+	if pauseCh != nil {
+		select {
+		case pauseCh <- struct{}{}:
+		default:
+		}
+	}
+	b.replyWithKeyboard(chatID, "⏸ Миграция приостановлена. Прогресс сохранён.", keyboardPaused())
+}
+
+func (b *Bot) resumeMigration(chatID int64, userID int64) {
+	sess := b.sessions.Get(userID)
+	if sess == nil {
+		return
+	}
+	sess.mu.Lock()
+	if sess.State != StatePaused {
+		sess.mu.Unlock()
+		b.reply(chatID, "Миграция не на паузе.")
+		return
+	}
+	sess.State = StateMigrating
+	pauseCh := sess.PauseCh
+	sess.mu.Unlock()
+	if pauseCh != nil {
+		select {
+		case pauseCh <- struct{}{}:
+		default:
+		}
+	}
+	b.replyWithKeyboard(chatID, "▶️ Миграция продолжается...", keyboardMigrating())
+}
+
+func (b *Bot) handleReset(msg *tgbotapi.Message) {
+	sess := b.sessions.Get(msg.From.ID)
+	if sess == nil {
+		b.replyWithKeyboard(msg.Chat.ID, "Нет активной сессии.", keyboardMain())
+		return
+	}
+
+	sess.mu.Lock()
+	state := sess.State
+	if (state == StateMigrating || state == StatePaused) && sess.Cancel != nil {
+		pauseCh := sess.PauseCh
+		sess.Cancel()
+		if state == StatePaused && pauseCh != nil {
+			select {
+			case pauseCh <- struct{}{}:
+			default:
+			}
+		}
+	}
 	sess.mu.Unlock()
 
-	b.replyWithKeyboard(chatID, "⏹ Миграция отменена. Прогресс сохранён.", keyboardMain())
+	b.sessions.Delete(msg.From.ID)
+	b.replyWithKeyboard(msg.Chat.ID, "Сессия сброшена. Отправь ZIP чтобы начать.", keyboardMain())
+}
+
+func (b *Bot) handleChangeChat(msg *tgbotapi.Message) {
+	sess := b.sessions.Get(msg.From.ID)
+	if sess == nil || sess.ExportPath == "" {
+		b.reply(msg.Chat.ID, "Сначала отправь ZIP-экспорт.")
+		return
+	}
+
+	sess.mu.Lock()
+	sess.MaxChatID = 0
+	sess.MaxChatName = ""
+	sess.State = StateAwaitingChatSearch
+	sess.mu.Unlock()
+
+	b.reply(msg.Chat.ID, "Введи название чата в Max для поиска.\nИли отправь числовой ID чата напрямую.")
 }
 
 // --- Max API ---
@@ -607,7 +1200,7 @@ type maxChat struct {
 }
 
 func (b *Bot) fetchMaxChats() []maxChat {
-	if b.maxToken == "" || b.maxToken == "placeholder" {
+	if b.maxToken == "" {
 		return nil
 	}
 
@@ -617,27 +1210,48 @@ func (b *Bot) fetchMaxChats() []maxChat {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	list, err := api.Chats.GetChats(ctx, 50, 0)
-	if err != nil {
-		b.log.Debug("failed to fetch max chats", "error", err)
-		return nil
+	var chats []maxChat
+	var marker int64
+
+	for {
+		list, err := api.Chats.GetChats(ctx, 50, marker)
+		if err != nil {
+			b.log.Debug("failed to fetch max chats", "error", err)
+			break
+		}
+
+		for _, c := range list.Chats {
+			if c.Status != schemes.ACTIVE {
+				continue
+			}
+			title := c.Title
+			if c.Type == schemes.DIALOG {
+				title = "Диалог"
+			}
+			chats = append(chats, maxChat{id: c.ChatId, title: title})
+		}
+
+		if list.Marker == nil || len(chats) >= 500 {
+			break
+		}
+		marker = *list.Marker
 	}
 
-	var chats []maxChat
-	for _, c := range list.Chats {
-		if c.Status != "active" {
-			continue
-		}
-		title := c.Title
-		if c.Type == "dialog" {
-			title = "Диалог"
-		}
-		chats = append(chats, maxChat{id: c.ChatId, title: title})
-	}
 	return chats
+}
+
+// hashFile returns the hex-encoded SHA-256 digest of a file's contents.
+// Returns an empty string on read error.
+func hashFile(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
 }
 
 // --- Helpers ---
@@ -692,10 +1306,53 @@ func readCursorProgress(cursorFile string, chatName string) (int, int) {
 	return 0, 0
 }
 
-func downloadFile(url, dest string) error {
-	resp, err := http.Get(url) //nolint:gosec
+// resolveFile copies/downloads the file to dest.
+// When tgAPIFilesDir is set, remaps the container path to the shared volume path.
+func (b *Bot) resolveFile(filePath, dest string) error {
+	if b.tgAPIFilesDir != "" {
+		const containerPrefix = "/var/lib/telegram-bot-api"
+		relativePath := strings.TrimPrefix(filePath, containerPrefix)
+		hostPath := filepath.Join(b.tgAPIFilesDir, relativePath)
+		// Ensure path stays within tgAPIFilesDir
+		if !strings.HasPrefix(filepath.Clean(hostPath)+"/",
+			filepath.Clean(b.tgAPIFilesDir)+"/") {
+			return fmt.Errorf("file path escapes allowed directory")
+		}
+		return copyFile(hostPath, dest)
+	}
+	var url string
+	if b.tgAPIEndpoint != "" {
+		url = fmt.Sprintf("%s/file/bot%s/%s", b.tgAPIEndpoint, b.api.Token, filePath)
+	} else {
+		url = fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", b.api.Token, filePath)
+	}
+	return downloadFile(url, dest)
+}
+
+func copyFile(src, dest string) error {
+	in, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("http get: %w", err)
+		return fmt.Errorf("open %s: %w", src, err)
+	}
+	defer in.Close()
+
+	out, err := os.Create(dest)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dest, err)
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
+}
+
+const maxDownloadSize = 2 << 30 // 2 GiB
+
+func downloadFile(url, dest string) error {
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Get(url) //nolint:gosec
+	if err != nil {
+		return fmt.Errorf("download file: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -705,10 +1362,10 @@ func downloadFile(url, dest string) error {
 
 	out, err := os.Create(dest)
 	if err != nil {
-		return fmt.Errorf("create %s: %w", dest, err)
+		return fmt.Errorf("create file: %w", err)
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
+	_, err = io.Copy(out, io.LimitReader(resp.Body, maxDownloadSize))
 	return err
 }

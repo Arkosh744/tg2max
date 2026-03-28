@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/arkosh/tg2max/internal/bot"
@@ -13,10 +15,13 @@ import (
 )
 
 type Config struct {
-	TelegramToken string `yaml:"telegram_token"`
-	MaxToken      string `yaml:"max_token"`
-	RateLimitRPS  int    `yaml:"rate_limit_rps"`
-	TempDir       string `yaml:"temp_dir"`
+	TelegramToken  string  `yaml:"telegram_token"`
+	MaxToken       string  `yaml:"max_token"`
+	RateLimitRPS   float64 `yaml:"rate_limit_rps"`
+	TempDir        string  `yaml:"temp_dir"`
+	TGAPIEndpoint  string  `yaml:"tg_api_endpoint"`
+	TGAPIFilesDir  string  `yaml:"tg_api_files_dir"`
+	AllowedUserIDs []int64 `yaml:"allowed_user_ids"`
 }
 
 func main() {
@@ -33,10 +38,13 @@ func main() {
 	cfg := loadConfig(*configPath, log)
 
 	b, err := bot.New(bot.Config{
-		TelegramToken: cfg.TelegramToken,
-		MaxToken:      cfg.MaxToken,
-		RateLimitRPS:  cfg.RateLimitRPS,
-		TempDir:       cfg.TempDir,
+		TelegramToken:  cfg.TelegramToken,
+		MaxToken:       cfg.MaxToken,
+		RateLimitRPS:   cfg.RateLimitRPS,
+		TempDir:        cfg.TempDir,
+		TGAPIEndpoint:  cfg.TGAPIEndpoint,
+		TGAPIFilesDir:  cfg.TGAPIFilesDir,
+		AllowedUserIDs: cfg.AllowedUserIDs,
 	}, log)
 	if err != nil {
 		log.Error("failed to create bot", "error", err)
@@ -79,6 +87,21 @@ func loadConfig(path string, log *slog.Logger) Config {
 	}
 	if v := os.Getenv("MAX_TOKEN"); v != "" {
 		cfg.MaxToken = v
+	}
+	if v := os.Getenv("TG_API_ENDPOINT"); v != "" {
+		cfg.TGAPIEndpoint = v
+	}
+	if v := os.Getenv("TG_API_FILES_DIR"); v != "" {
+		cfg.TGAPIFilesDir = v
+	}
+
+	if v := os.Getenv("ALLOWED_USER_IDS"); v != "" {
+		for _, s := range strings.Split(v, ",") {
+			id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+			if err == nil {
+				cfg.AllowedUserIDs = append(cfg.AllowedUserIDs, id)
+			}
+		}
 	}
 
 	if cfg.TelegramToken == "" {
