@@ -1,0 +1,13 @@
+.env
+config.yaml
+*.local
+docs/
+bin/tg2max
+bin/tg2max-bot
+bin/maxclean*
+bin/maxtest*
+.git/
+.claude/
+.idea/
+.vscode/
+cursor.json
