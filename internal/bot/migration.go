@@ -204,6 +204,8 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 			}
 			// Restore main keyboard (final status is in the edited progress message)
 			b.replyWithKeyboard(chatID, "Миграция завершена. Отправь новый ZIP для следующего чата.", keyboardMain())
+			// Notify waiting users that the bot is free
+			b.notifyWaiting()
 		}()
 
 		botSender, senderErr := maxbot.NewSender(b.maxToken, b.rps)

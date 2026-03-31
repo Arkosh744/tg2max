@@ -500,7 +500,7 @@ func (b *Bot) handleFilterCallback(chatID int64, userID int64, data string) {
 // --- Admin: /stats ---
 
 func (b *Bot) handleStats(ctx context.Context, msg *tgbotapi.Message) {
-	if !b.isAuthorized(msg.From.ID) {
+	if !b.isAdmin(msg.From.ID) {
 		b.reply(msg.Chat.ID, "Команда доступна только администраторам.")
 		return
 	}

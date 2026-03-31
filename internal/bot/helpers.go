@@ -89,7 +89,7 @@ func (b *Bot) estimateETA(sess *Session) string {
 }
 
 // checkBusy checks if another user is running a migration.
-// If busy, sends a message to chatID with ETA and returns true.
+// If busy, sends a message to chatID with ETA, adds to waiting queue, and returns true.
 func (b *Bot) checkBusy(chatID int64, userID int64) bool {
 	active := b.sessions.GetActiveMigration()
 	if active == nil || active.UserID == userID {
@@ -104,7 +104,32 @@ func (b *Bot) checkBusy(chatID int64, userID int64) bool {
 	} else {
 		msg += " Попробуйте позже."
 	}
+	msg += "\nВы получите уведомление когда бот освободится."
 	b.reply(chatID, msg)
+
+	// Add to waiting queue (deduplicate)
+	b.addWaiting(chatID)
 	return true
+}
+
+// addWaiting adds a chat ID to the notification queue (deduplicates).
+func (b *Bot) addWaiting(chatID int64) {
+	for _, id := range b.waitingUsers {
+		if id == chatID {
+			return
+		}
+	}
+	b.waitingUsers = append(b.waitingUsers, chatID)
+}
+
+// notifyWaiting sends a notification to all waiting users and clears the queue.
+func (b *Bot) notifyWaiting() {
+	if len(b.waitingUsers) == 0 {
+		return
+	}
+	for _, chatID := range b.waitingUsers {
+		b.reply(chatID, "🔔 Бот свободен! Можешь отправить ZIP для миграции.")
+	}
+	b.waitingUsers = nil
 }
 

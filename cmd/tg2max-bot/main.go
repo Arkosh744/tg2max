@@ -56,6 +56,7 @@ func main() {
 		TGAPIEndpoint:  cfg.TGAPIEndpoint,
 		TGAPIFilesDir:  cfg.TGAPIFilesDir,
 		AllowedUserIDs: cfg.AllowedUserIDs,
+		AdminUserIDs:   cfg.AdminUserIDs,
 		DBPath:         cfg.DBPath,
 	}, log)
 	if err != nil {
@@ -155,6 +156,14 @@ func loadConfig(path string, log *slog.Logger) Config {
 			id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 			if err == nil {
 				cfg.AllowedUserIDs = append(cfg.AllowedUserIDs, id)
+			}
+		}
+	}
+	if v := os.Getenv("ADMIN_USER_IDS"); v != "" {
+		for _, s := range strings.Split(v, ",") {
+			id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+			if err == nil {
+				cfg.AdminUserIDs = append(cfg.AdminUserIDs, id)
 			}
 		}
 	}

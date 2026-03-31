@@ -23,6 +23,8 @@ type Bot struct {
 	tgAPIEndpoint  string
 	tgAPIFilesDir  string
 	allowedUserIDs map[int64]struct{}
+	adminUserIDs   map[int64]struct{}
+	waitingUsers   []int64 // users waiting for busy lock to clear
 	log            *slog.Logger
 	startedAt      time.Time
 }
@@ -35,6 +37,7 @@ type Config struct {
 	TGAPIEndpoint  string  // Local Bot API server URL, e.g. "http://localhost:8081"
 	TGAPIFilesDir  string  // Host path to local Bot API files volume
 	AllowedUserIDs []int64 // if empty, open to everyone (NOT recommended for production)
+	AdminUserIDs   []int64 // users with access to /stats; defaults to AllowedUserIDs
 	DBPath         string  // path to SQLite database; empty = no persistent storage
 }
 
@@ -65,6 +68,22 @@ func New(cfg Config, log *slog.Logger) (*Bot, error) {
 		allowed[id] = struct{}{}
 	}
 
+	admins := make(map[int64]struct{}, len(cfg.AdminUserIDs))
+	if len(cfg.AdminUserIDs) > 0 {
+		for _, id := range cfg.AdminUserIDs {
+			admins[id] = struct{}{}
+		}
+	} else {
+		// Default: all allowed users are admins
+		for id := range allowed {
+			admins[id] = struct{}{}
+		}
+	}
+
+	if len(cfg.AllowedUserIDs) == 0 {
+		log.Warn("SECURITY: allowed_user_ids is empty — bot is open to ALL Telegram users")
+	}
+
 	var store storage.Storage
 	if cfg.DBPath != "" {
 		store, err = storage.NewSQLite(cfg.DBPath)
@@ -85,6 +104,7 @@ func New(cfg Config, log *slog.Logger) (*Bot, error) {
 		tgAPIEndpoint:  cfg.TGAPIEndpoint,
 		tgAPIFilesDir:  cfg.TGAPIFilesDir,
 		allowedUserIDs: allowed,
+		adminUserIDs:   admins,
 		log:            log,
 		startedAt:      time.Now(),
 	}, nil
@@ -165,6 +185,11 @@ func (b *Bot) isAuthorized(userID int64) bool {
 		return true
 	}
 	_, ok := b.allowedUserIDs[userID]
+	return ok
+}
+
+func (b *Bot) isAdmin(userID int64) bool {
+	_, ok := b.adminUserIDs[userID]
 	return ok
 }
 
