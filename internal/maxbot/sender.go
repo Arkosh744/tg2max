@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -83,15 +84,15 @@ func (s *Sender) withRetry(ctx context.Context, op func() error) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(retryBackoff[i]):
+			case <-time.After(retryBackoff[i] + time.Duration(rand.Int63n(int64(retryBackoff[i]/5))) - retryBackoff[i]/10):
 			}
 		}
 	}
 	return lastErr
 }
 
-// isRetryable returns true for HTTP 429 responses and network errors.
-// HTTP 500 on uploads is NOT retried — it's a server-side bug, not transient.
+// isRetryable returns true for HTTP 429/5xx responses and network timeout errors.
+// Unknown errors default to not retryable to avoid silent retry loops.
 func isRetryable(err error) bool {
 	if err == nil {
 		return false
@@ -99,7 +100,7 @@ func isRetryable(err error) bool {
 
 	var apiErr *maxbotapi.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.Code == http.StatusTooManyRequests
+		return apiErr.Code == http.StatusTooManyRequests || apiErr.Code >= 500
 	}
 
 	// Check if it's an upload error (HTTP 500 from upload CDN) — not retryable
@@ -109,7 +110,13 @@ func isRetryable(err error) bool {
 	}
 
 	// Network errors (timeout, connection refused) are retryable
-	return true
+	var netErr interface{ Timeout() bool }
+	if errors.As(err, &netErr) {
+		return true
+	}
+
+	// Default: not retryable (unknown errors should not be silently retried)
+	return false
 }
 
 func (s *Sender) SendText(ctx context.Context, chatID int64, text string) error {
@@ -135,12 +142,13 @@ func (s *Sender) SendWithPhoto(ctx context.Context, chatID int64, text string, p
 		return err
 	}
 
-	return s.withRetry(ctx, func() error {
-		photo, err := s.api.Uploads.UploadPhotoFromFile(ctx, photoPath)
-		if err != nil {
-			return fmt.Errorf("upload photo %s: %w", photoPath, err)
-		}
+	// Upload once, outside retry loop
+	photo, err := s.api.Uploads.UploadPhotoFromFile(ctx, photoPath)
+	if err != nil {
+		return fmt.Errorf("upload photo %s: %w", photoPath, err)
+	}
 
+	return s.withRetry(ctx, func() error {
 		msg := maxbotapi.NewMessage().
 			SetChat(chatID).
 			SetText(text).
@@ -159,21 +167,20 @@ func (s *Sender) SendWithMedia(ctx context.Context, chatID int64, text string, m
 		return err
 	}
 
+	// Upload once, outside retry loop
+	uploadType := resolveUploadType(mediaType)
+	uploaded, err := s.api.Uploads.UploadMediaFromFile(ctx, uploadType, mediaPath)
+	if err != nil && uploadType == schemes.VIDEO {
+		uploaded, err = s.api.Uploads.UploadMediaFromFile(ctx, schemes.FILE, mediaPath)
+		if err == nil {
+			uploadType = schemes.FILE
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("upload media %s: %w", mediaPath, err)
+	}
+
 	return s.withRetry(ctx, func() error {
-		uploadType := resolveUploadType(mediaType)
-
-		uploaded, err := s.api.Uploads.UploadMediaFromFile(ctx, uploadType, mediaPath)
-		if err != nil && uploadType == schemes.VIDEO {
-			// Fallback: retry video as generic file
-			uploaded, err = s.api.Uploads.UploadMediaFromFile(ctx, schemes.FILE, mediaPath)
-			if err == nil {
-				uploadType = schemes.FILE
-			}
-		}
-		if err != nil {
-			return fmt.Errorf("upload media %s: %w", mediaPath, err)
-		}
-
 		msg := maxbotapi.NewMessage().
 			SetChat(chatID).
 			SetText(text).

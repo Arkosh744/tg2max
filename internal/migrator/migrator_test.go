@@ -477,7 +477,7 @@ func Test_FilterMessages_All(t *testing.T) {
 		{ID: 1, Timestamp: time.Now()},
 		{ID: 2, Timestamp: time.Now(), Media: []models.MediaFile{{Type: models.MediaPhoto}}},
 	}
-	got := filterMessages(msgs, "", 0)
+	got := FilterMessages(msgs, "", 0)
 	if len(got) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(got))
 	}
@@ -489,7 +489,7 @@ func Test_FilterMessages_TextOnly(t *testing.T) {
 		{ID: 2, Timestamp: time.Now(), Media: []models.MediaFile{{Type: models.MediaPhoto}}},
 		{ID: 3, Timestamp: time.Now()},
 	}
-	got := filterMessages(msgs, "text", 0)
+	got := FilterMessages(msgs, "text", 0)
 	if len(got) != 2 {
 		t.Errorf("expected 2 text-only messages, got %d", len(got))
 	}
@@ -506,7 +506,7 @@ func Test_FilterMessages_MediaOnly(t *testing.T) {
 		{ID: 2, Timestamp: time.Now(), Media: []models.MediaFile{{Type: models.MediaPhoto}}},
 		{ID: 3, Timestamp: time.Now(), Media: []models.MediaFile{{Type: models.MediaVideo}}},
 	}
-	got := filterMessages(msgs, "media", 0)
+	got := FilterMessages(msgs, "media", 0)
 	if len(got) != 2 {
 		t.Errorf("expected 2 media messages, got %d", len(got))
 	}
@@ -526,7 +526,7 @@ func Test_FilterMessages_DateCutoff(t *testing.T) {
 		{ID: 3, Timestamp: time.Now()},
 	}
 	// Filter: last 3 months — should keep IDs 2 and 3
-	got := filterMessages(msgs, "", 3)
+	got := FilterMessages(msgs, "", 3)
 	if len(got) != 2 {
 		t.Errorf("expected 2 recent messages, got %d", len(got))
 	}
@@ -545,14 +545,14 @@ func Test_FilterMessages_DateAndTypeCombo(t *testing.T) {
 		{ID: 4, Timestamp: old, Media: []models.MediaFile{{Type: models.MediaPhoto}}},        // old media
 	}
 	// Only recent media
-	got := filterMessages(msgs, "media", 3)
+	got := FilterMessages(msgs, "media", 3)
 	if len(got) != 1 || got[0].ID != 2 {
 		t.Errorf("expected only message ID=2, got %v", got)
 	}
 }
 
 func Test_FilterMessages_EmptyInput(t *testing.T) {
-	got := filterMessages(nil, "text", 6)
+	got := FilterMessages(nil, "text", 6)
 	if len(got) != 0 {
 		t.Errorf("expected empty result for nil input, got %d", len(got))
 	}

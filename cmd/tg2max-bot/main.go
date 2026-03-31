@@ -22,6 +22,7 @@ type Config struct {
 	TGAPIEndpoint  string  `yaml:"tg_api_endpoint"`
 	TGAPIFilesDir  string  `yaml:"tg_api_files_dir"`
 	AllowedUserIDs []int64 `yaml:"allowed_user_ids"`
+	DBPath         string  `yaml:"db_path"`
 }
 
 func main() {
@@ -45,11 +46,13 @@ func main() {
 		TGAPIEndpoint:  cfg.TGAPIEndpoint,
 		TGAPIFilesDir:  cfg.TGAPIFilesDir,
 		AllowedUserIDs: cfg.AllowedUserIDs,
+		DBPath:         cfg.DBPath,
 	}, log)
 	if err != nil {
 		log.Error("failed to create bot", "error", err)
 		os.Exit(1)
 	}
+	defer b.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -93,6 +96,10 @@ func loadConfig(path string, log *slog.Logger) Config {
 	}
 	if v := os.Getenv("TG_API_FILES_DIR"); v != "" {
 		cfg.TGAPIFilesDir = v
+	}
+
+	if v := os.Getenv("DB_PATH"); v != "" {
+		cfg.DBPath = v
 	}
 
 	if v := os.Getenv("ALLOWED_USER_IDS"); v != "" {

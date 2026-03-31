@@ -2,6 +2,8 @@ package bot
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -32,9 +34,16 @@ type Session struct {
 	LastActive     time.Time
 	FilterType     string // "all", "text", "media" — default means all
 	FilterMonths   int    // 0 = all time, 3 = last 3 months, 6 = last 6 months
-	PauseCh        chan struct{} // signals pause/resume to the migration goroutine
-	FailedMediaIDs []int        // message IDs where media upload failed
-	mu             sync.Mutex
+	PauseCh chan struct{} // signals pause/resume to the migration goroutine
+
+	// Migration metadata for busy lock and DB logging
+	MigrationDBID  int64     // DB migration record ID
+	LastUploadID   int64     // DB upload ID for FK
+	MigrationStart time.Time // when migration goroutine started
+	CursorFile     string    // path to cursor.json for progress reads
+	CursorName     string    // cursor chat name for progress lookup
+
+	mu sync.Mutex
 }
 
 type SessionStore struct {
@@ -50,10 +59,12 @@ func NewSessionStore() *SessionStore {
 
 func (s *SessionStore) Get(userID int64) *Session {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	sess := s.sessions[userID]
+	s.mu.RUnlock()
 	if sess != nil {
+		sess.mu.Lock()
 		sess.LastActive = time.Now()
+		sess.mu.Unlock()
 	}
 	return sess
 }
@@ -83,6 +94,22 @@ func (s *SessionStore) Delete(userID int64) {
 	delete(s.sessions, userID)
 }
 
+// GetActiveMigration returns the session of the user currently running a migration,
+// or nil if no migration is in progress.
+func (s *SessionStore) GetActiveMigration() *Session {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, sess := range s.sessions {
+		sess.mu.Lock()
+		state := sess.State
+		sess.mu.Unlock()
+		if state == StateMigrating || state == StatePaused {
+			return sess
+		}
+	}
+	return nil
+}
+
 // StartCleanup removes sessions inactive for longer than sessionTTL.
 func (s *SessionStore) StartCleanup(ctx context.Context) {
 	go func() {
@@ -101,6 +128,9 @@ func (s *SessionStore) StartCleanup(ctx context.Context) {
 					if time.Since(sess.LastActive) > sessionTTL {
 						if sess.Cancel != nil {
 							sess.Cancel()
+						}
+						if sess.ExportDir != "" {
+							os.RemoveAll(filepath.Dir(sess.ExportDir))
 						}
 						delete(s.sessions, id)
 					}

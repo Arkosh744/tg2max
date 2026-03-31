@@ -158,7 +158,7 @@ func (m *Migrator) migrate(ctx context.Context, mapping models.ChatMapping) (Sta
 	}
 	if mapping.FilterType != "" || mapping.FilterMonths > 0 {
 		before := len(pending)
-		pending = filterMessages(pending, mapping.FilterType, mapping.FilterMonths)
+		pending = FilterMessages(pending, mapping.FilterType, mapping.FilterMonths)
 		m.log.Info("filter applied",
 			"chat", mapping.Name,
 			"filter_type", mapping.FilterType,
@@ -257,10 +257,10 @@ func (m *Migrator) migrate(ctx context.Context, mapping models.ChatMapping) (Sta
 	return stats, nil
 }
 
-// filterMessages returns messages matching the type and date filters from the mapping.
+// FilterMessages returns messages matching the type and date filters.
 // filterType "text" keeps only messages without media; "media" keeps only those with media.
 // filterMonths > 0 keeps only messages within the last N months.
-func filterMessages(msgs []models.Message, filterType string, filterMonths int) []models.Message {
+func FilterMessages(msgs []models.Message, filterType string, filterMonths int) []models.Message {
 	var cutoff time.Time
 	if filterMonths > 0 {
 		cutoff = time.Now().AddDate(0, -filterMonths, 0)

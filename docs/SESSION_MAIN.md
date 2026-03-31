@@ -1,5 +1,45 @@
 # Session Log
 
+## [2026-03-31 10:30:00] SQLite Storage + Busy Lock + UX Improvements
+
+### Что сделано
+
+**Phase 1: SQLite Storage** (`internal/storage/`)
+- `storage.go` — интерфейс Storage с типами User, Upload, Migration, UserStats, HistoryEntry
+- `sqlite.go` — реализация на `modernc.org/sqlite` (pure Go, без CGO), WAL mode, schema migrations
+- `nop.go` — no-op fallback для обратной совместимости
+- `sqlite_test.go` — 7 тестов, покрытие 70.9%
+
+**Phase 2: Global Busy Lock с ETA**
+- `session.go` — новые поля (MigrationDBID, MigrationStart, CursorFile), метод `GetActiveMigration()`
+- `bot.go` — `checkBusy()` + `estimateETA()` в handleDocument и startMigration
+- `session_test.go` — 3 теста на busy lock
+
+**Phase 3: UX Improvements**
+- `/stats` (admin) — общая статистика: пользователи, миграции, успех/ошибки, среднее время
+- `/history` (user) — последние 10 миграций пользователя
+- `trackUser()` — логирование пользователей в БД
+- SaveUpload/StartMigration/FinishMigration — полный lifecycle в БД
+
+**Phase 4: Config & Infra**
+- `cmd/tg2max-bot/main.go` — DBPath config + DB_PATH env + defer Close()
+- `docker-compose.yml` — DB_PATH env var
+- `configs/config.example.yaml` — документация db_path
+- `.gitignore` — *.db
+
+### Результат
+- `go build ./...` — OK
+- `go test -race ./...` — все тесты проходят
+- `go vet ./...` — чисто
+
+### Новые файлы
+- `internal/storage/storage.go`, `sqlite.go`, `nop.go`, `sqlite_test.go`
+- `internal/bot/session_test.go`
+
+### Изменённые файлы
+- `go.mod`, `go.sum`, `internal/bot/session.go`, `internal/bot/bot.go`
+- `cmd/tg2max-bot/main.go`, `configs/config.example.yaml`, `docker-compose.yml`, `.gitignore`
+
 ## [2026-03-28 00:00:00] Tests: internal/migrator (83.5%) + internal/converter (94.2%)
 
 ### internal/migrator — добавлено в migrator_test.go

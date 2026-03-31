@@ -24,6 +24,7 @@ import (
 	"github.com/arkosh/tg2max/internal/export"
 	"github.com/arkosh/tg2max/internal/maxbot"
 	"github.com/arkosh/tg2max/internal/migrator"
+	"github.com/arkosh/tg2max/internal/storage"
 	"github.com/arkosh/tg2max/internal/telegram"
 	"github.com/arkosh/tg2max/pkg/models"
 )
@@ -31,11 +32,12 @@ import (
 type Bot struct {
 	api            *tgbotapi.BotAPI
 	sessions       *SessionStore
+	storage        storage.Storage
 	maxToken       string
 	rps            float64
 	tempDir        string
 	tgAPIEndpoint  string
-	tgAPIFilesDir  string // host path mapped to /var/lib/telegram-bot-api in container
+	tgAPIFilesDir  string
 	allowedUserIDs map[int64]struct{}
 	log            *slog.Logger
 }
@@ -48,6 +50,7 @@ type Config struct {
 	TGAPIEndpoint  string  // Local Bot API server URL, e.g. "http://localhost:8081"
 	TGAPIFilesDir  string  // Host path to local Bot API files volume
 	AllowedUserIDs []int64 // if empty, open to everyone (NOT recommended for production)
+	DBPath         string  // path to SQLite database; empty = no persistent storage
 }
 
 func New(cfg Config, log *slog.Logger) (*Bot, error) {
@@ -77,9 +80,20 @@ func New(cfg Config, log *slog.Logger) (*Bot, error) {
 		allowed[id] = struct{}{}
 	}
 
+	var store storage.Storage
+	if cfg.DBPath != "" {
+		store, err = storage.NewSQLite(cfg.DBPath)
+		if err != nil {
+			return nil, fmt.Errorf("open database: %w", err)
+		}
+	} else {
+		store = storage.Nop{}
+	}
+
 	return &Bot{
 		api:            api,
 		sessions:       NewSessionStore(),
+		storage:        store,
 		maxToken:       cfg.MaxToken,
 		rps:            cfg.RateLimitRPS,
 		tempDir:        cfg.TempDir,
@@ -88,6 +102,11 @@ func New(cfg Config, log *slog.Logger) (*Bot, error) {
 		allowedUserIDs: allowed,
 		log:            log,
 	}, nil
+}
+
+// Close releases resources held by the bot (database connection, etc.).
+func (b *Bot) Close() error {
+	return b.storage.Close()
 }
 
 func (b *Bot) isAuthorized(userID int64) bool {
@@ -107,8 +126,10 @@ func (b *Bot) Run(ctx context.Context) error {
 		tgbotapi.BotCommand{Command: "start", Description: "Начать работу"},
 		tgbotapi.BotCommand{Command: "help", Description: "Справка"},
 		tgbotapi.BotCommand{Command: "status", Description: "Текущий статус"},
+		tgbotapi.BotCommand{Command: "history", Description: "История миграций"},
 		tgbotapi.BotCommand{Command: "cancel", Description: "Отменить миграцию"},
 		tgbotapi.BotCommand{Command: "reset", Description: "Сбросить сессию"},
+		tgbotapi.BotCommand{Command: "stats", Description: "Статистика (админ)"},
 	)
 	b.api.Request(commands)
 
@@ -194,6 +215,9 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	}
 	b.log.Debug("incoming message", "from", msg.From.ID, "text", msg.Text, "command", msg.Command())
 
+	// Track user in persistent storage (fire-and-forget)
+	b.trackUser(ctx, msg.From)
+
 	// Handle commands
 	if msg.IsCommand() {
 		switch msg.Command() {
@@ -205,6 +229,10 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.handleSetChat(msg)
 		case "status":
 			b.handleStatus(msg)
+		case "history":
+			b.handleHistory(ctx, msg)
+		case "stats":
+			b.handleStats(ctx, msg)
 		case "cancel":
 			b.handleCancel(msg)
 		case "reset":
@@ -262,6 +290,12 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			return
 		case StateAwaitingChatID:
 			b.parseChatID(msg, sess)
+			return
+		case StateAwaitingFilter:
+			b.reply(msg.Chat.ID, "Выбери фильтр из кнопок выше.")
+			return
+		case StateAwaitingConfirm:
+			b.reply(msg.Chat.ID, "Нажми «Подтвердить перенос» или «Предпросмотр».")
 			return
 		}
 	}
@@ -409,24 +443,33 @@ func (b *Bot) handleStart(msg *tgbotapi.Message) {
 		}
 	}
 
+	sizeLimit := "512 МБ"
+	if b.tgAPIEndpoint != "" {
+		sizeLimit = "2 ГБ"
+	}
 	text := "Привет! Я перенесу историю чата из Telegram в Max.\n\n" +
 		"Шаг 1: Экспортируй чат в Telegram Desktop\n" +
 		"  Чат → ⋯ → Export Chat History → Format: JSON\n" +
+		"  (ВАЖНО: выбери формат JSON, не HTML)\n" +
 		"  Включи нужные медиа (фото, видео, файлы)\n\n" +
 		"Шаг 2: Заархивируй полученную папку в ZIP\n\n" +
 		"Шаг 3: Отправь ZIP сюда\n\n" +
-		"Максимальный размер: 512 МБ"
+		"Максимальный размер: " + sizeLimit
 
 	b.replyWithKeyboard(msg.Chat.ID, text, keyboardMain())
 }
 
 func (b *Bot) handleHelp(msg *tgbotapi.Message) {
-	text := `Как использовать:
+	helpLimit := "512 МБ"
+	if b.tgAPIEndpoint != "" {
+		helpLimit = "2 ГБ"
+	}
+	text := fmt.Sprintf(`Как использовать:
 
 1. Экспортируй чат в Telegram Desktop
    Чат → ⋯ → Export Chat History → JSON + медиа
-2. Заархивируй папку в ZIP (макс 512 МБ)
-3. Отправь ZIP сюда
+2. Заархивируй папку в ZIP (макс %s)
+3. Отправь ZIP сюда`, helpLimit) + `
 4. Введи название чата в Max для поиска
    (или числовой ID чата)
 5. Проверь предпросмотр и подтверди
@@ -450,6 +493,11 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 		return
 	}
 
+	// Global busy lock — reject if another user is migrating
+	if b.checkBusy(msg.Chat.ID, msg.From.ID) {
+		return
+	}
+
 	sess := b.sessions.GetOrCreate(msg.From.ID)
 	sess.mu.Lock()
 	if sess.State == StateMigrating || sess.State == StatePaused {
@@ -459,9 +507,16 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 	}
 	sess.mu.Unlock()
 
-	const maxZipSize = 512 * 1024 * 1024 // 512 MiB
-	if doc.FileSize > maxZipSize {
-		b.reply(msg.Chat.ID, "Файл слишком большой (макс 512 МБ).")
+	maxZipSize := 512 * 1024 * 1024 // 512 MiB via standard Telegram API
+	if b.tgAPIEndpoint != "" {
+		maxZipSize = 2 * 1024 * 1024 * 1024 // 2 GiB via Local Bot API
+	}
+	if int64(doc.FileSize) > int64(maxZipSize) {
+		limit := "512 МБ"
+		if b.tgAPIEndpoint != "" {
+			limit = "2 ГБ"
+		}
+		b.reply(msg.Chat.ID, fmt.Sprintf("Файл слишком большой (макс %s).", limit))
 		return
 	}
 
@@ -473,6 +528,7 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 		b.reply(msg.Chat.ID, "Ошибка получения файла. Попробуй ещё раз.")
 		return
 	}
+	b.log.Info("file info", "filePath", file.FilePath, "fileID", doc.FileID, "fileSize", doc.FileSize)
 
 	userDir := filepath.Join(b.tempDir, fmt.Sprintf("user_%d", msg.From.ID))
 
@@ -482,7 +538,9 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 	if sess := b.sessions.Get(msg.From.ID); sess != nil && sess.ExportPath != "" {
 		oldCursor := filepath.Join(filepath.Dir(sess.ExportPath), "cursor.json")
 		if data, err := os.ReadFile(oldCursor); err == nil {
-			os.WriteFile(cursorBackup, data, 0644)
+			if err := os.WriteFile(cursorBackup, data, 0600); err != nil {
+				b.log.Warn("cursor backup failed", "error", err)
+			}
 		}
 	}
 
@@ -521,7 +579,19 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 
 		if oldHash != "" && oldHash == newHash {
 			if _, statErr := os.Stat(oldExportDir); statErr == nil {
-				b.reply(msg.Chat.ID, "Экспорт уже загружен, продолжаю с сохранённого прогресса.")
+				// Restore session state and show appropriate keyboard
+				sess.mu.Lock()
+				state := sess.State
+				sess.mu.Unlock()
+				switch state {
+				case StateMigrating, StatePaused:
+					b.reply(msg.Chat.ID, "Миграция уже идёт с этим экспортом.")
+				case StateAwaitingConfirm:
+					b.replyWithKeyboard(msg.Chat.ID, "Экспорт уже загружен. Нажми «Подтвердить перенос».", keyboardAwaitingConfirm())
+				default:
+					b.replyWithKeyboard(msg.Chat.ID, "Экспорт уже загружен.\nВведи название чата в Max для поиска.", keyboardMain())
+				}
+				os.RemoveAll(userDir) // clean up duplicate extraction
 				return
 			}
 		}
@@ -531,10 +601,13 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 	cursorRestored := false
 	restoredCursor := filepath.Join(filepath.Dir(resultJSON), "cursor.json")
 	if data, err := os.ReadFile(cursorBackup); err == nil {
-		os.WriteFile(restoredCursor, data, 0644)
+		if err := os.WriteFile(restoredCursor, data, 0600); err != nil {
+			b.log.Warn("cursor restore failed", "error", err)
+		} else {
+			cursorRestored = true
+			b.log.Info("cursor restored, migration will resume")
+		}
 		os.Remove(cursorBackup)
-		cursorRestored = true
-		b.log.Info("cursor restored, migration will resume")
 	}
 
 	info, err := export.Analyze(resultJSON)
@@ -544,11 +617,24 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 		return
 	}
 
+	// Log upload in persistent storage
+	uploadID, uploadErr := b.storage.SaveUpload(context.Background(), storage.Upload{
+		UserID:       msg.From.ID,
+		Filename:     doc.FileName,
+		FileSize:     int64(doc.FileSize),
+		ExportHash:   newHash,
+		MessageCount: info.Messages,
+	})
+	if uploadErr != nil {
+		b.log.Warn("save upload failed", "error", uploadErr)
+	}
+
 	sess.mu.Lock()
 	sess.ExportPath = resultJSON
 	sess.ExportDir = extractDir
 	sess.ExportHash = newHash
 	sess.State = StateAwaitingChatSearch
+	sess.LastUploadID = uploadID
 	sess.mu.Unlock()
 
 	var sb strings.Builder
@@ -701,16 +787,19 @@ func (b *Bot) parseChatID(msg *tgbotapi.Message, sess *Session) {
 
 func (b *Bot) parseChatIDFromString(chatID int64, input string, sess *Session) {
 	id, err := strconv.ParseInt(strings.TrimSpace(input), 10, 64)
-	if err != nil {
-		b.reply(chatID, "Неверный ID. Отправь число — ID чата в Max.")
+	if err != nil || id <= 0 {
+		b.reply(chatID, "Неверный ID. Отправь положительное число — ID чата в Max.")
 		return
 	}
 
+	chatName := fmt.Sprintf("Chat %d", id)
 	sess.mu.Lock()
 	sess.MaxChatID = id
+	sess.MaxChatName = chatName
+	sess.State = StateAwaitingFilter
 	sess.mu.Unlock()
 
-	b.showPreviewAndConfirm(chatID, sess.UserID)
+	b.showFilterKeyboard(chatID, chatName, id)
 }
 
 // --- Step 3: Preview + Confirm ---
@@ -759,8 +848,15 @@ func (b *Bot) showPreviewAndConfirm(chatID int64, userID int64) {
 		fmt.Fprintf(&sb, "Фильтр: за последние %d мес.\n", filterMonths)
 	}
 
+	// Apply filters before dry-run for accurate stats
+	filtered := result.Messages
+	if filterType != "" || filterMonths > 0 {
+		filtered = migrator.FilterMessages(filtered, filterType, filterMonths)
+		fmt.Fprintf(&sb, "После фильтрации: %d сообщений\n", len(filtered))
+	}
+
 	// Run dry-run analysis for accurate stats and ETA
-	dryStats := migrator.DryRun(result.Messages, conv)
+	dryStats := migrator.DryRun(filtered, conv)
 
 	// Duration estimate based on actual output requests (more accurate than raw message count)
 	estimateSec := float64(dryStats.OutputMessages) / b.rps
@@ -809,6 +905,11 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 		return
 	}
 
+	// Global busy lock — reject if another user is migrating
+	if b.checkBusy(chatID, userID) {
+		return
+	}
+
 	sess.mu.Lock()
 	if sess.MaxChatID == 0 {
 		sess.mu.Unlock()
@@ -825,10 +926,31 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 	sess.Cancel = cancel
 	exportPath := sess.ExportPath
 	maxChatID := sess.MaxChatID
+	maxChatName := sess.MaxChatName
 	filterType := sess.FilterType
 	filterMonths := sess.FilterMonths
+	lastUploadID := sess.LastUploadID
 	pauseCh := make(chan struct{}, 1)
 	sess.PauseCh = pauseCh
+	sess.MigrationStart = time.Now()
+	sess.CursorFile = filepath.Join(filepath.Dir(exportPath), "cursor.json")
+	sess.CursorName = fmt.Sprintf("max-%d", maxChatID)
+	sess.mu.Unlock()
+
+	// Log migration start in persistent storage
+	migDBID, dbErr := b.storage.StartMigration(ctx, storage.Migration{
+		UserID:       userID,
+		UploadID:     lastUploadID,
+		MaxChatID:    maxChatID,
+		MaxChatName:  maxChatName,
+		FilterType:   filterType,
+		FilterMonths: filterMonths,
+	})
+	if dbErr != nil {
+		b.log.Warn("log migration start failed", "error", dbErr)
+	}
+	sess.mu.Lock()
+	sess.MigrationDBID = migDBID
 	sess.mu.Unlock()
 
 	// Show migrating keyboard
@@ -868,7 +990,8 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 
 		botSender, senderErr := maxbot.NewSender(b.maxToken, b.rps)
 		if senderErr != nil {
-			b.editMessage(chatID, progressMsgID, fmt.Sprintf("❌ Ошибка Max API: %s", senderErr))
+			b.log.Error("max api sender init failed", "error", senderErr)
+			b.editMessage(chatID, progressMsgID, "❌ Ошибка подключения к Max API. Попробуйте позже.")
 			return
 		}
 
@@ -880,7 +1003,7 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 				label = "Rate limit"
 			}
 			b.editMessage(chatID, progressMsgID,
-				fmt.Sprintf("⏳ %s (попытка %d), жду %s...\n\n%s", label, attempt, wait.Round(time.Second), err))
+				fmt.Sprintf("⏳ %s (попытка %d), жду %s...", label, attempt, wait.Round(time.Second)))
 		})
 
 		b.editMessage(chatID, progressMsgID, "⏳ Перенос запущен, отправляю сообщения...")
@@ -889,8 +1012,9 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 		mig := migrator.New(botSender, conv, cursorFile, b.log)
 		mig.SetPauseCh(pauseCh)
 
+		cursorName := fmt.Sprintf("max-%d", maxChatID)
 		mapping := []models.ChatMapping{{
-			Name:         "bot-migration",
+			Name:         cursorName,
 			TGExportPath: exportPath,
 			MaxChatID:    maxChatID,
 			FilterType:   filterType,
@@ -910,7 +1034,7 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 				case <-migCtx.Done():
 					return
 				case <-ticker.C:
-					sentCount, total := readCursorProgress(cursorFile, "bot-migration")
+					sentCount, total := readCursorProgress(cursorFile, cursorName)
 					if total <= 0 {
 						continue
 					}
@@ -931,13 +1055,29 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 
 		stats, migErr := mig.MigrateAll(migCtx, mapping)
 
+		// Log migration result in persistent storage
+		if migDBID > 0 {
+			finStatus := "completed"
+			finErr := ""
+			if migErr != nil {
+				if migCtx.Err() != nil {
+					finStatus = "cancelled"
+				} else {
+					finStatus = "failed"
+				}
+				finErr = migErr.Error()
+			}
+			if dbErr := b.storage.FinishMigration(context.Background(), migDBID, finStatus, stats.Sent, finErr); dbErr != nil {
+				b.log.Warn("log migration finish failed", "error", dbErr)
+			}
+		}
+
 		if migErr != nil {
-			b.log.Error("migration failed", "chat", "bot-migration", "error", migErr, "sent", stats.Sent)
+			b.log.Error("migration failed", "chat", maxChatName, "error", migErr, "sent", stats.Sent)
 			b.editMessage(chatID, progressMsgID,
 				fmt.Sprintf("⚠️ Миграция прервана\n\n"+
-					"Отправлено: %d\n"+
-					"Ошибка: %s\n\n"+
-					"Прогресс сохранён — отправь тот же ZIP чтобы продолжить.", stats.Sent, migErr))
+					"Отправлено: %d\n\n"+
+					"Прогресс сохранён — отправь тот же ZIP чтобы продолжить.", stats.Sent))
 			return
 		}
 
@@ -978,9 +1118,6 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 		}
 
 		if len(stats.FailedFiles) > 0 {
-			sess.mu.Lock()
-			sess.FailedMediaIDs = nil // reset before storing new failed list
-			sess.mu.Unlock()
 			result.WriteString("\n\n⚠️ Файлы, которые не удалось загрузить как медиа")
 			result.WriteString(" (были отправлены как текст):\n")
 			limit := 10
@@ -1244,14 +1381,181 @@ func (b *Bot) fetchMaxChats() []maxChat {
 }
 
 // hashFile returns the hex-encoded SHA-256 digest of a file's contents.
-// Returns an empty string on read error.
+// Uses streaming to avoid loading the entire file into memory.
 func hashFile(path string) string {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// --- Storage helpers ---
+
+// trackUser logs the user in persistent storage (fire-and-forget).
+func (b *Bot) trackUser(ctx context.Context, from *tgbotapi.User) {
+	if from == nil {
+		return
+	}
+	if err := b.storage.UpsertUser(ctx, storage.User{
+		TelegramID: from.ID,
+		Username:   from.UserName,
+		FirstName:  from.FirstName,
+		LastName:   from.LastName,
+	}); err != nil {
+		b.log.Warn("track user failed", "error", err, "user_id", from.ID)
+	}
+}
+
+// --- Busy lock ---
+
+// estimateETA returns a human-readable remaining time string based on cursor progress.
+func (b *Bot) estimateETA(sess *Session) string {
+	if sess == nil {
+		return ""
+	}
+	sess.mu.Lock()
+	cursorFile := sess.CursorFile
+	cursorName := sess.CursorName
+	startedAt := sess.MigrationStart
+	sess.mu.Unlock()
+
+	if cursorFile == "" || startedAt.IsZero() {
+		return ""
+	}
+
+	sent, total := readCursorProgress(cursorFile, cursorName)
+	if total <= 0 || sent <= 0 {
+		return ""
+	}
+
+	elapsed := time.Since(startedAt).Seconds()
+	speed := float64(sent) / elapsed
+	if speed <= 0 {
+		return ""
+	}
+	remaining := time.Duration(float64(total-sent) / speed * float64(time.Second))
+	remaining = remaining.Round(time.Minute)
+
+	if remaining < time.Minute {
+		return "~1 мин"
+	}
+	hours := int(remaining.Hours())
+	minutes := int(remaining.Minutes()) % 60
+	if hours > 0 {
+		return fmt.Sprintf("~%d ч %d мин", hours, minutes)
+	}
+	return fmt.Sprintf("~%d мин", minutes)
+}
+
+// checkBusy checks if another user is running a migration.
+// If busy, sends a message to chatID with ETA and returns true.
+func (b *Bot) checkBusy(chatID int64, userID int64) bool {
+	active := b.sessions.GetActiveMigration()
+	if active == nil || active.UserID == userID {
+		return false
+	}
+
+	eta := b.estimateETA(active)
+
+	msg := "⏳ Бот занят миграцией другого пользователя."
+	if eta != "" {
+		msg += fmt.Sprintf(" Попробуйте через %s.", eta)
+	} else {
+		msg += " Попробуйте позже."
+	}
+	b.reply(chatID, msg)
+	return true
+}
+
+// --- Admin: /stats ---
+
+func (b *Bot) handleStats(ctx context.Context, msg *tgbotapi.Message) {
+	if !b.isAuthorized(msg.From.ID) {
+		b.reply(msg.Chat.ID, "Команда доступна только администраторам.")
+		return
+	}
+
+	st, err := b.storage.GetStats(ctx)
+	if err != nil {
+		b.log.Error("get stats failed", "error", err)
+		b.reply(msg.Chat.ID, "Ошибка получения статистики.")
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📊 Статистика бота\n\n")
+	fmt.Fprintf(&sb, "👥 Пользователей: %d\n", st.TotalUsers)
+	fmt.Fprintf(&sb, "📦 Миграций всего: %d\n", st.TotalMigrations)
+	fmt.Fprintf(&sb, "  ✅ Завершено: %d\n", st.Completed)
+	fmt.Fprintf(&sb, "  ❌ Ошибок: %d\n", st.Failed)
+	fmt.Fprintf(&sb, "  ⏹ Отменено: %d\n", st.Cancelled)
+	fmt.Fprintf(&sb, "📨 Сообщений отправлено: %d\n", st.TotalSent)
+	if st.AvgDurationSec > 0 {
+		avg := time.Duration(st.AvgDurationSec) * time.Second
+		fmt.Fprintf(&sb, "⏱ Среднее время: %s\n", avg.Round(time.Second))
+	}
+
+	// Show active migration if any
+	active := b.sessions.GetActiveMigration()
+	if active != nil {
+		active.mu.Lock()
+		uid := active.UserID
+		chatName := active.MaxChatName
+		active.mu.Unlock()
+		eta := b.estimateETA(active)
+		fmt.Fprintf(&sb, "\n🚀 Активная миграция: user %d → %s", uid, chatName)
+		if eta != "" {
+			fmt.Fprintf(&sb, " (%s осталось)", eta)
+		}
+	}
+
+	b.reply(msg.Chat.ID, sb.String())
+}
+
+// --- User: /history ---
+
+func (b *Bot) handleHistory(ctx context.Context, msg *tgbotapi.Message) {
+	entries, err := b.storage.GetUserHistory(ctx, msg.From.ID, 10)
+	if err != nil {
+		b.log.Error("get history failed", "error", err)
+		b.reply(msg.Chat.ID, "Ошибка получения истории.")
+		return
+	}
+
+	if len(entries) == 0 {
+		b.reply(msg.Chat.ID, "История миграций пуста.")
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📋 История миграций\n\n")
+	statusEmoji := map[string]string{
+		"completed": "✅",
+		"failed":    "❌",
+		"cancelled": "⏹",
+		"started":   "🚀",
+	}
+	for _, e := range entries {
+		emoji := statusEmoji[e.Status]
+		if emoji == "" {
+			emoji = "❓"
+		}
+		dur := time.Duration(e.DurationSeconds) * time.Second
+		fmt.Fprintf(&sb, "%s %s — %s\n", emoji, e.StartedAt.Format("02.01.2006 15:04"), e.MaxChatName)
+		fmt.Fprintf(&sb, "   %d/%d сообщений", e.SentMessages, e.TotalMessages)
+		if e.DurationSeconds > 0 {
+			fmt.Fprintf(&sb, " · %s", dur.Round(time.Second))
+		}
+		sb.WriteString("\n")
+	}
+
+	b.reply(msg.Chat.ID, sb.String())
 }
 
 // --- Helpers ---
@@ -1307,44 +1611,42 @@ func readCursorProgress(cursorFile string, chatName string) (int, int) {
 }
 
 // resolveFile copies/downloads the file to dest.
-// When tgAPIFilesDir is set, remaps the container path to the shared volume path.
+// Local Bot API (--local mode) stores files on disk and returns absolute paths,
+// so we read directly from the shared volume. Remote API uses HTTP download.
 func (b *Bot) resolveFile(filePath, dest string) error {
 	if b.tgAPIFilesDir != "" {
+		// filePath is absolute container path: /var/lib/telegram-bot-api/TOKEN/documents/file.zip
+		// Remap to shared volume path.
 		const containerPrefix = "/var/lib/telegram-bot-api"
 		relativePath := strings.TrimPrefix(filePath, containerPrefix)
 		hostPath := filepath.Join(b.tgAPIFilesDir, relativePath)
-		// Ensure path stays within tgAPIFilesDir
 		if !strings.HasPrefix(filepath.Clean(hostPath)+"/",
 			filepath.Clean(b.tgAPIFilesDir)+"/") {
 			return fmt.Errorf("file path escapes allowed directory")
 		}
 		return copyFile(hostPath, dest)
 	}
-	var url string
-	if b.tgAPIEndpoint != "" {
-		url = fmt.Sprintf("%s/file/bot%s/%s", b.tgAPIEndpoint, b.api.Token, filePath)
-	} else {
-		url = fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", b.api.Token, filePath)
-	}
+	url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", b.api.Token, filePath)
 	return downloadFile(url, dest)
 }
 
 func copyFile(src, dest string) error {
 	in, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", src, err)
+		return fmt.Errorf("open: %w", err)
 	}
 	defer in.Close()
 
 	out, err := os.Create(dest)
 	if err != nil {
-		return fmt.Errorf("create %s: %w", dest, err)
+		return fmt.Errorf("create: %w", err)
 	}
 	defer out.Close()
 
 	_, err = io.Copy(out, in)
 	return err
 }
+
 
 const maxDownloadSize = 2 << 30 // 2 GiB
 

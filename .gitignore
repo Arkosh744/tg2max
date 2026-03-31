@@ -5,6 +5,7 @@ bin/
 config.yaml
 .env
 cursor.json
+*.db
 *.exe
 .idea/
 .vscode/

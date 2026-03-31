@@ -32,6 +32,7 @@ services:
       TG_API_ENDPOINT: "http://tg-bot-api:8081"
       TG_API_FILES_DIR: "/tg-files"
       ALLOWED_USER_IDS: "${ALLOWED_USER_IDS}"
+      DB_PATH: "/tmp/tg2max/tg2max.db"
     volumes:
       - /tmp/tg2max:/tmp/tg2max
       - /home/arkosh/.local/share/tg2max-bot-api:/tg-files:ro
