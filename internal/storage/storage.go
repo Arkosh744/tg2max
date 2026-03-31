@@ -66,6 +66,24 @@ type HistoryEntry struct {
 	StartedAt       time.Time
 }
 
+// MigrationFilter defines pagination and filtering for ListMigrations.
+type MigrationFilter struct {
+	Status  string // "", "completed", "failed", "cancelled", "started"
+	UserID  int64  // 0 = all users
+	Page    int
+	PerPage int
+}
+
+// UserRow is a user with aggregated migration stats.
+type UserRow struct {
+	TelegramID     int64
+	Username       string
+	FirstName      string
+	LastName       string
+	MigrationCount int
+	LastActiveAt   time.Time
+}
+
 // Storage provides persistent storage for user data, uploads, and migrations.
 type Storage interface {
 	// UpsertUser creates or updates a user record.
@@ -89,6 +107,22 @@ type Storage interface {
 
 	// GetUserHistory returns the last N migration entries for a given user.
 	GetUserHistory(ctx context.Context, userID int64, limit int) ([]HistoryEntry, error)
+
+	// ListMigrations returns paginated migrations with optional filtering.
+	// Returns migrations and total count for pagination.
+	ListMigrations(ctx context.Context, f MigrationFilter) ([]Migration, int, error)
+
+	// GetMigration returns a single migration by ID.
+	GetMigration(ctx context.Context, id int64) (*Migration, error)
+
+	// ListUsers returns paginated users with migration count.
+	ListUsers(ctx context.Context, page, perPage int) ([]UserRow, int, error)
+
+	// GetUser returns a single user by telegram ID.
+	GetUser(ctx context.Context, telegramID int64) (*User, error)
+
+	// GetRecentMigrations returns the last N migrations for the dashboard.
+	GetRecentMigrations(ctx context.Context, limit int) ([]Migration, error)
 
 	// Close closes the storage connection.
 	Close() error

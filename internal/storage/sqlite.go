@@ -231,6 +231,174 @@ func (s *SQLite) GetUserHistory(ctx context.Context, userID int64, limit int) ([
 	return entries, rows.Err()
 }
 
+func (s *SQLite) ListMigrations(ctx context.Context, f MigrationFilter) ([]Migration, int, error) {
+	if f.PerPage <= 0 {
+		f.PerPage = 20
+	}
+	if f.Page <= 0 {
+		f.Page = 1
+	}
+	offset := (f.Page - 1) * f.PerPage
+
+	var total int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM migrations
+		WHERE (? = '' OR status = ?) AND (? = 0 OR user_id = ?)`,
+		f.Status, f.Status, f.UserID, f.UserID).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count migrations: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, user_id, upload_id, max_chat_id, max_chat_name,
+			filter_type, filter_months, total_messages, sent_messages,
+			status, started_at, COALESCE(finished_at, ''), error_message, duration_seconds
+		FROM migrations
+		WHERE (? = '' OR status = ?) AND (? = 0 OR user_id = ?)
+		ORDER BY id DESC
+		LIMIT ? OFFSET ?`,
+		f.Status, f.Status, f.UserID, f.UserID, f.PerPage, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list migrations: %w", err)
+	}
+	defer rows.Close()
+
+	var result []Migration
+	for rows.Next() {
+		var m Migration
+		var startedAt, finishedAt string
+		if err := rows.Scan(&m.ID, &m.UserID, &m.UploadID, &m.MaxChatID, &m.MaxChatName,
+			&m.FilterType, &m.FilterMonths, &m.TotalMessages, &m.SentMessages,
+			&m.Status, &startedAt, &finishedAt, &m.ErrorMessage, &m.DurationSeconds); err != nil {
+			return nil, 0, fmt.Errorf("scan migration: %w", err)
+		}
+		if t, e := time.Parse(time.RFC3339, startedAt); e == nil {
+			m.StartedAt = t
+		}
+		if t, e := time.Parse(time.RFC3339, finishedAt); e == nil {
+			m.FinishedAt = &t
+		}
+		result = append(result, m)
+	}
+	return result, total, rows.Err()
+}
+
+func (s *SQLite) GetMigration(ctx context.Context, id int64) (*Migration, error) {
+	var m Migration
+	var startedAt, finishedAt string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, upload_id, max_chat_id, max_chat_name,
+			filter_type, filter_months, total_messages, sent_messages,
+			status, started_at, COALESCE(finished_at, ''), error_message, duration_seconds
+		FROM migrations WHERE id = ?`, id).
+		Scan(&m.ID, &m.UserID, &m.UploadID, &m.MaxChatID, &m.MaxChatName,
+			&m.FilterType, &m.FilterMonths, &m.TotalMessages, &m.SentMessages,
+			&m.Status, &startedAt, &finishedAt, &m.ErrorMessage, &m.DurationSeconds)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get migration %d: %w", id, err)
+	}
+	if t, e := time.Parse(time.RFC3339, startedAt); e == nil {
+		m.StartedAt = t
+	}
+	if t, e := time.Parse(time.RFC3339, finishedAt); e == nil {
+		m.FinishedAt = &t
+	}
+	return &m, nil
+}
+
+func (s *SQLite) ListUsers(ctx context.Context, page, perPage int) ([]UserRow, int, error) {
+	if perPage <= 0 {
+		perPage = 20
+	}
+	if page <= 0 {
+		page = 1
+	}
+	offset := (page - 1) * perPage
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count users: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT u.telegram_id, u.username, u.first_name, u.last_name,
+			COALESCE((SELECT COUNT(*) FROM migrations m WHERE m.user_id = u.telegram_id), 0),
+			u.last_seen_at
+		FROM users u
+		ORDER BY u.last_seen_at DESC
+		LIMIT ? OFFSET ?`, perPage, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+
+	var result []UserRow
+	for rows.Next() {
+		var u UserRow
+		var lastSeen string
+		if err := rows.Scan(&u.TelegramID, &u.Username, &u.FirstName, &u.LastName,
+			&u.MigrationCount, &lastSeen); err != nil {
+			return nil, 0, fmt.Errorf("scan user: %w", err)
+		}
+		if t, e := time.Parse(time.RFC3339, lastSeen); e == nil {
+			u.LastActiveAt = t
+		}
+		result = append(result, u)
+	}
+	return result, total, rows.Err()
+}
+
+func (s *SQLite) GetUser(ctx context.Context, telegramID int64) (*User, error) {
+	var u User
+	var firstSeen, lastSeen string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT telegram_id, username, first_name, last_name, first_seen_at, last_seen_at
+		FROM users WHERE telegram_id = ?`, telegramID).
+		Scan(&u.TelegramID, &u.Username, &u.FirstName, &u.LastName, &firstSeen, &lastSeen)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user %d: %w", telegramID, err)
+	}
+	if t, e := time.Parse(time.RFC3339, firstSeen); e == nil {
+		u.FirstSeenAt = t
+	}
+	if t, e := time.Parse(time.RFC3339, lastSeen); e == nil {
+		u.LastSeenAt = t
+	}
+	return &u, nil
+}
+
+func (s *SQLite) GetRecentMigrations(ctx context.Context, limit int) ([]Migration, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, user_id, max_chat_name, total_messages, sent_messages,
+			status, started_at, duration_seconds
+		FROM migrations ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get recent migrations: %w", err)
+	}
+	defer rows.Close()
+
+	var result []Migration
+	for rows.Next() {
+		var m Migration
+		var startedAt string
+		if err := rows.Scan(&m.ID, &m.UserID, &m.MaxChatName, &m.TotalMessages, &m.SentMessages,
+			&m.Status, &startedAt, &m.DurationSeconds); err != nil {
+			return nil, fmt.Errorf("scan recent migration: %w", err)
+		}
+		if t, e := time.Parse(time.RFC3339, startedAt); e == nil {
+			m.StartedAt = t
+		}
+		result = append(result, m)
+	}
+	return result, rows.Err()
+}
+
 func (s *SQLite) Close() error {
 	return s.db.Close()
 }

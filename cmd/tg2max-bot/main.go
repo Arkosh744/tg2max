@@ -10,6 +10,11 @@ import (
 	"strings"
 	"syscall"
 
+	"crypto/rand"
+	"encoding/hex"
+	"net/http"
+
+	"github.com/arkosh/tg2max/internal/admin"
 	"github.com/arkosh/tg2max/internal/bot"
 	"gopkg.in/yaml.v3"
 )
@@ -23,6 +28,10 @@ type Config struct {
 	TGAPIFilesDir  string  `yaml:"tg_api_files_dir"`
 	AllowedUserIDs []int64 `yaml:"allowed_user_ids"`
 	DBPath         string  `yaml:"db_path"`
+	AdminEnabled   bool    `yaml:"admin_enabled"`
+	AdminAddr      string  `yaml:"admin_addr"`
+	AdminPassword  string  `yaml:"admin_password"`
+	AdminSecret    string  `yaml:"admin_secret"`
 }
 
 func main() {
@@ -65,6 +74,32 @@ func main() {
 		cancel()
 	}()
 
+	// Start admin web UI if enabled
+	if cfg.AdminEnabled {
+		if cfg.AdminPassword == "" {
+			log.Error("admin_password is required when admin_enabled is true")
+			os.Exit(1)
+		}
+		if cfg.AdminSecret == "" {
+			buf := make([]byte, 32)
+			rand.Read(buf)
+			cfg.AdminSecret = hex.EncodeToString(buf)
+		}
+		if cfg.AdminAddr == "" {
+			cfg.AdminAddr = ":8080"
+		}
+		adminSrv := admin.New(b.Storage(), b, admin.Config{
+			Addr:     cfg.AdminAddr,
+			Password: cfg.AdminPassword,
+			Secret:   cfg.AdminSecret,
+		}, log)
+		go func() {
+			if err := adminSrv.ListenAndServe(ctx); err != nil && err != http.ErrServerClosed {
+				log.Error("admin server error", "error", err)
+			}
+		}()
+	}
+
 	if err := b.Run(ctx); err != nil {
 		log.Error("bot stopped with error", "error", err)
 		os.Exit(1)
@@ -100,6 +135,18 @@ func loadConfig(path string, log *slog.Logger) Config {
 
 	if v := os.Getenv("DB_PATH"); v != "" {
 		cfg.DBPath = v
+	}
+	if v := os.Getenv("ADMIN_ENABLED"); v == "true" || v == "1" {
+		cfg.AdminEnabled = true
+	}
+	if v := os.Getenv("ADMIN_ADDR"); v != "" {
+		cfg.AdminAddr = v
+	}
+	if v := os.Getenv("ADMIN_PASSWORD"); v != "" {
+		cfg.AdminPassword = v
+	}
+	if v := os.Getenv("ADMIN_SECRET"); v != "" {
+		cfg.AdminSecret = v
 	}
 
 	if v := os.Getenv("ALLOWED_USER_IDS"); v != "" {

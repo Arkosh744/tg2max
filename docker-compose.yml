@@ -33,6 +33,11 @@ services:
       TG_API_FILES_DIR: "/tg-files"
       ALLOWED_USER_IDS: "${ALLOWED_USER_IDS}"
       DB_PATH: "/tmp/tg2max/tg2max.db"
+      ADMIN_ENABLED: "true"
+      ADMIN_ADDR: ":8080"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+    ports:
+      - "127.0.0.1:8080:8080"
     volumes:
       - /tmp/tg2max:/tmp/tg2max
       - /home/arkosh/.local/share/tg2max-bot-api:/tg-files:ro

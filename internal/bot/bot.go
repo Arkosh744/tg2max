@@ -40,6 +40,7 @@ type Bot struct {
 	tgAPIFilesDir  string
 	allowedUserIDs map[int64]struct{}
 	log            *slog.Logger
+	startedAt      time.Time
 }
 
 type Config struct {
@@ -101,12 +102,78 @@ func New(cfg Config, log *slog.Logger) (*Bot, error) {
 		tgAPIFilesDir:  cfg.TGAPIFilesDir,
 		allowedUserIDs: allowed,
 		log:            log,
+		startedAt:      time.Now(),
 	}, nil
 }
 
 // Close releases resources held by the bot (database connection, etc.).
 func (b *Bot) Close() error {
 	return b.storage.Close()
+}
+
+// Storage returns the bot's persistent storage (for admin UI).
+func (b *Bot) Storage() storage.Storage {
+	return b.storage
+}
+
+// Uptime returns how long the bot has been running.
+func (b *Bot) Uptime() time.Duration {
+	return time.Since(b.startedAt)
+}
+
+// ActiveMigration returns a snapshot of the currently running migration, or nil.
+func (b *Bot) ActiveMigration() *models.LiveMigration {
+	sess := b.sessions.GetActiveMigration()
+	if sess == nil {
+		return nil
+	}
+	sess.mu.Lock()
+	cursorFile := sess.CursorFile
+	cursorName := sess.CursorName
+	startedAt := sess.MigrationStart
+	maxChat := sess.MaxChatName
+	userID := sess.UserID
+	paused := sess.State == StatePaused
+	sess.mu.Unlock()
+
+	sent, total := readCursorProgress(cursorFile, cursorName)
+	pct := 0
+	if total > 0 {
+		pct = sent * 100 / total
+	}
+
+	var speed float64
+	eta := ""
+	elapsed := time.Since(startedAt)
+	if sent > 0 && elapsed.Seconds() > 0 {
+		speed = float64(sent) / elapsed.Seconds()
+		remaining := time.Duration(float64(total-sent) / speed * float64(time.Second))
+		remaining = remaining.Round(time.Minute)
+		if remaining < time.Minute {
+			eta = "~1 мин"
+		} else {
+			hours := int(remaining.Hours())
+			minutes := int(remaining.Minutes()) % 60
+			if hours > 0 {
+				eta = fmt.Sprintf("~%d ч %d мин", hours, minutes)
+			} else {
+				eta = fmt.Sprintf("~%d мин", minutes)
+			}
+		}
+	}
+
+	return &models.LiveMigration{
+		UserID:        userID,
+		MaxChatName:   maxChat,
+		TotalMessages: total,
+		SentMessages:  sent,
+		Percent:       pct,
+		ETA:           eta,
+		StartedAt:     startedAt,
+		Elapsed:       elapsed.Round(time.Second),
+		Speed:         speed,
+		Paused:        paused,
+	}
 }
 
 func (b *Bot) isAuthorized(userID int64) bool {
