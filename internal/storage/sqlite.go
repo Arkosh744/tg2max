@@ -373,6 +373,33 @@ func (s *SQLite) GetUser(ctx context.Context, telegramID int64) (*User, error) {
 	return &u, nil
 }
 
+func (s *SQLite) GetDailyStats(ctx context.Context, days int) ([]DailyStat, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			date(started_at) AS day,
+			COUNT(*) AS migrations,
+			COALESCE(SUM(sent_messages), 0) AS messages,
+			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS errors
+		FROM migrations
+		WHERE started_at >= date('now', printf('-%d days', ?))
+		GROUP BY day
+		ORDER BY day`, days)
+	if err != nil {
+		return nil, fmt.Errorf("get daily stats: %w", err)
+	}
+	defer rows.Close()
+
+	var result []DailyStat
+	for rows.Next() {
+		var d DailyStat
+		if err := rows.Scan(&d.Date, &d.Migrations, &d.Messages, &d.Errors); err != nil {
+			return nil, fmt.Errorf("scan daily stat: %w", err)
+		}
+		result = append(result, d)
+	}
+	return result, rows.Err()
+}
+
 func (s *SQLite) GetRecentMigrations(ctx context.Context, limit int) ([]Migration, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, user_id, max_chat_name, total_messages, sent_messages,

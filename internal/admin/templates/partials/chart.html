@@ -1,0 +1,66 @@
+{{define "chart_data"}}
+<div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+    <h3 class="text-white font-semibold mb-4">Активность за 30 дней</h3>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div>
+            <canvas id="migrationsChart" height="200"></canvas>
+        </div>
+        <div>
+            <canvas id="messagesChart" height="200"></canvas>
+        </div>
+    </div>
+</div>
+<script>
+(function() {
+    const data = {{.ChartJSON}};
+    const labels = data.map(d => d.date.slice(5)); // "MM-DD"
+
+    const chartOpts = {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+            x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+            y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' }, beginAtZero: true }
+        }
+    };
+
+    // Migrations chart
+    const migCtx = document.getElementById('migrationsChart');
+    if (migCtx) {
+        if (migCtx._chart) migCtx._chart.destroy();
+        migCtx._chart = new Chart(migCtx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [
+                    { label: 'Миграции', data: data.map(d => d.migrations), backgroundColor: '#3b82f6' },
+                    { label: 'Ошибки', data: data.map(d => d.errors), backgroundColor: '#ef4444' }
+                ]
+            },
+            options: { ...chartOpts, plugins: { ...chartOpts.plugins, title: { display: true, text: 'Миграции / день', color: '#e2e8f0' } } }
+        });
+    }
+
+    // Messages chart
+    const msgCtx = document.getElementById('messagesChart');
+    if (msgCtx) {
+        if (msgCtx._chart) msgCtx._chart.destroy();
+        msgCtx._chart = new Chart(msgCtx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Сообщений',
+                    data: data.map(d => d.messages),
+                    borderColor: '#10b981',
+                    backgroundColor: 'rgba(16,185,129,0.1)',
+                    fill: true,
+                    tension: 0.3
+                }]
+            },
+            options: { ...chartOpts, plugins: { ...chartOpts.plugins, title: { display: true, text: 'Сообщений / день', color: '#e2e8f0' } } }
+        });
+    }
+})();
+</script>
+{{end}}

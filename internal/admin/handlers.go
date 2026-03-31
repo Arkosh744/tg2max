@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -25,6 +26,7 @@ type pageData struct {
 	LiveMig    interface{} // *models.LiveMigration
 	Recent     []storage.Migration
 	History    []storage.HistoryEntry
+	ChartJSON  string // JSON array of daily stats for Chart.js
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -41,13 +43,23 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("dashboard: get recent migrations failed", "error", err)
 	}
 
+	chartJSON := "[]"
+	if daily, err := s.store.GetDailyStats(r.Context(), 30); err != nil {
+		s.log.Error("dashboard: get daily stats failed", "error", err)
+	} else if len(daily) > 0 {
+		if data, err := json.Marshal(daily); err == nil {
+			chartJSON = string(data)
+		}
+	}
+
 	s.render(w, "dashboard.html", pageData{
-		Title:   "Dashboard",
-		Active:  "dashboard",
-		Uptime:  s.fmtUptime(),
-		Stats:   stats,
-		Recent:  recent,
-		LiveMig: s.bot.ActiveMigration(),
+		Title:     "Dashboard",
+		Active:    "dashboard",
+		Uptime:    s.fmtUptime(),
+		Stats:     stats,
+		Recent:    recent,
+		LiveMig:   s.bot.ActiveMigration(),
+		ChartJSON: chartJSON,
 	})
 }
 

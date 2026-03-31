@@ -66,6 +66,14 @@ type HistoryEntry struct {
 	StartedAt       time.Time
 }
 
+// DailyStat holds per-day aggregated migration data for charts.
+type DailyStat struct {
+	Date       string `json:"date"`
+	Migrations int    `json:"migrations"`
+	Messages   int    `json:"messages"`
+	Errors     int    `json:"errors"`
+}
+
 // MigrationFilter defines pagination and filtering for ListMigrations.
 type MigrationFilter struct {
 	Status  string // "", "completed", "failed", "cancelled", "started"
@@ -123,6 +131,9 @@ type Storage interface {
 
 	// GetRecentMigrations returns the last N migrations for the dashboard.
 	GetRecentMigrations(ctx context.Context, limit int) ([]Migration, error)
+
+	// GetDailyStats returns migration counts and message totals per day for the last N days.
+	GetDailyStats(ctx context.Context, days int) ([]DailyStat, error)
 
 	// Close closes the storage connection.
 	Close() error

@@ -17,5 +17,6 @@ func (Nop) ListMigrations(context.Context, MigrationFilter) ([]Migration, int, e
 func (Nop) GetMigration(context.Context, int64) (*Migration, error)                    { return nil, nil }
 func (Nop) ListUsers(context.Context, int, int) ([]UserRow, int, error)                { return nil, 0, nil }
 func (Nop) GetUser(context.Context, int64) (*User, error)                              { return nil, nil }
+func (Nop) GetDailyStats(context.Context, int) ([]DailyStat, error)                    { return nil, nil }
 func (Nop) GetRecentMigrations(context.Context, int) ([]Migration, error)              { return nil, nil }
 func (Nop) Close() error                                                               { return nil }
