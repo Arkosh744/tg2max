@@ -27,6 +27,7 @@ type Config struct {
 	TGAPIEndpoint  string  `yaml:"tg_api_endpoint"`
 	TGAPIFilesDir  string  `yaml:"tg_api_files_dir"`
 	AllowedUserIDs []int64 `yaml:"allowed_user_ids"`
+	AdminUserIDs   []int64 `yaml:"admin_user_ids"`
 	DBPath         string  `yaml:"db_path"`
 	AdminEnabled   bool    `yaml:"admin_enabled"`
 	AdminAddr      string  `yaml:"admin_addr"`

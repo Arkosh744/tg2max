@@ -28,3 +28,24 @@
 - [x] [100%] Feature 9: Failed media tracking — Stats.FailedFiles, sendMessage returns failedFile, summary shows failed file list (2026-03-28)
 - [x] [100%] Tests: internal/export (89.4%) + internal/telegram (95.6%) — 18 новых тестов в unzip_test.go, 14 новых в reader_test.go (2026-03-28)
 - [x] [100%] Tests: internal/migrator (83.5%) + internal/converter (94.2%) — DryRun, replyTextFor, sendMessage, CanGroup, SplitMessage Cyrillic, NewWithTimezone (2026-03-28)
+- [x] [100%] SQLite persistent storage — users/uploads/migrations tables, Nop fallback, /stats, /history (2026-03-31)
+- [x] [100%] Global busy lock with ETA — one migration at a time, cursor-based ETA (2026-03-31)
+- [x] [100%] Rate limiting improvements — upload/send split, jitter, isRetryable fix, 5xx retry (2026-03-31)
+- [x] [100%] UX fixes batch — dynamic ZIP limit 2GB, DryRun with filters, dead end fix, error sanitization, streaming SHA-256 (2026-03-31)
+- [x] [100%] Web admin panel — HTMX+Tailwind dark theme, dashboard, migrations, users, HMAC auth (2026-03-31)
+- [x] [100%] Crash recovery — orphaned migrations marked failed on startup (2026-03-31)
+- [x] [100%] Combinable filters — two-step UI (content type → period) (2026-03-31)
+- [x] [100%] Streaming JSON — json.NewDecoder for reader.go and unzip.go, O(1 message) memory (2026-03-31)
+- [x] [100%] Docker hardening — Alpine 3.21 pinned, non-root user (2026-03-31)
+- [x] [100%] Admin detail pages — migration_detail.html, user_detail.html (2026-03-31)
+
+## Backlog
+
+- [ ] [0%] Декомпозиция bot.go (#2) — разбить 1700+ строк на handlers.go, migration.go, upload.go, keyboard.go, helpers.go
+- [ ] [0%] Тесты admin пакета — handlers, auth, template rendering (0% coverage)
+- [ ] [0%] Admin user roles — отдельный admin_user_ids в конфиге, разделить admin/user
+- [ ] [0%] Очередь миграций — уведомить юзера когда бот освободится вместо "приходи позже"
+- [ ] [0%] SSE для live progress — заменить HTMX polling на Server-Sent Events для админки
+- [ ] [0%] Графики в админке — миграции/день, chart.js или встроенный SVG
+- [ ] [0%] Экспорт лога миграции — файл с деталями отправленных/failed сообщений
+- [ ] [0%] Telegram Mini App — админка прямо в Telegram
