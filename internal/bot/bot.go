@@ -188,6 +188,14 @@ func (b *Bot) Run(ctx context.Context) error {
 	b.log.Info("bot started", "username", b.api.Self.UserName)
 	b.sessions.StartCleanup(ctx)
 
+	// Crash recovery: mark orphaned migrations as failed
+	if active, err := b.storage.GetActiveMigration(ctx); err == nil && active != nil {
+		b.log.Warn("found orphaned migration from previous crash", "id", active.ID, "user", active.UserID)
+		if err := b.storage.FinishMigration(ctx, active.ID, "failed", active.SentMessages, "process crashed"); err != nil {
+			b.log.Error("failed to recover orphaned migration", "error", err)
+		}
+	}
+
 	// Register bot commands in Telegram menu
 	commands := tgbotapi.NewSetMyCommands(
 		tgbotapi.BotCommand{Command: "start", Description: "Начать работу"},
@@ -435,27 +443,42 @@ func (b *Bot) handleSelectChat(tgChatID int64, userID int64, cb *tgbotapi.Callba
 	b.showFilterKeyboard(tgChatID, chatName, maxChatID)
 }
 
-// showFilterKeyboard sends the inline keyboard asking the user which messages to migrate.
+// showFilterKeyboard sends the inline keyboard for content type selection (step 1 of 2).
 func (b *Bot) showFilterKeyboard(chatID int64, chatName string, maxChatID int64) {
-	text := fmt.Sprintf("Выбран чат: %s (ID: %d)\n\nЧто переносить?", chatName, maxChatID)
+	text := fmt.Sprintf("Выбран чат: %s (ID: %d)\n\nШаг 1/2: Какой контент переносить?", chatName, maxChatID)
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Всё", "filter:all"),
-			tgbotapi.NewInlineKeyboardButtonData("Только текст", "filter:text"),
-			tgbotapi.NewInlineKeyboardButtonData("Только медиа", "filter:media"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("За 3 месяца", "filter:3m"),
-			tgbotapi.NewInlineKeyboardButtonData("За 6 месяцев", "filter:6m"),
-			tgbotapi.NewInlineKeyboardButtonData("За всё время", "filter:all"),
+			tgbotapi.NewInlineKeyboardButtonData("📦 Всё", "filter:type:all"),
+			tgbotapi.NewInlineKeyboardButtonData("📝 Только текст", "filter:type:text"),
+			tgbotapi.NewInlineKeyboardButtonData("🖼 Только медиа", "filter:type:media"),
 		),
 	)
 	msg := tgbotapi.NewMessage(chatID, text)
 	msg.ReplyMarkup = keyboard
-	b.api.Send(msg)
+	if _, err := b.api.Send(msg); err != nil {
+		b.log.Error("send filter keyboard failed", "error", err)
+	}
 }
 
-// handleFilterCallback parses a filter:* callback, saves filter to session, moves to confirm.
+// showPeriodKeyboard sends the inline keyboard for period selection (step 2 of 2).
+func (b *Bot) showPeriodKeyboard(chatID int64) {
+	text := "Шаг 2/2: За какой период?"
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("3 месяца", "filter:period:3m"),
+			tgbotapi.NewInlineKeyboardButtonData("6 месяцев", "filter:period:6m"),
+			tgbotapi.NewInlineKeyboardButtonData("За всё время", "filter:period:all"),
+		),
+	)
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = keyboard
+	if _, err := b.api.Send(msg); err != nil {
+		b.log.Error("send period keyboard failed", "error", err)
+	}
+}
+
+// handleFilterCallback parses filter:type:* and filter:period:* callbacks.
+// Two-step flow: type selection → period selection → preview.
 func (b *Bot) handleFilterCallback(chatID int64, userID int64, data string) {
 	sess := b.sessions.Get(userID)
 	if sess == nil {
@@ -465,30 +488,47 @@ func (b *Bot) handleFilterCallback(chatID int64, userID int64, data string) {
 
 	token := strings.TrimPrefix(data, "filter:")
 
-	var filterType string
-	var filterMonths int
+	switch {
+	case strings.HasPrefix(token, "type:"):
+		// Step 1: content type selected → show period keyboard
+		typeVal := strings.TrimPrefix(token, "type:")
+		sess.mu.Lock()
+		switch typeVal {
+		case "text":
+			sess.FilterType = "text"
+		case "media":
+			sess.FilterType = "media"
+		default:
+			sess.FilterType = ""
+		}
+		sess.mu.Unlock()
+		b.showPeriodKeyboard(chatID)
 
-	switch token {
-	case "text":
-		filterType = "text"
-	case "media":
-		filterType = "media"
-	case "3m":
-		filterMonths = 3
-	case "6m":
-		filterMonths = 6
-	default: // "all" and any unknown value
-		filterType = ""
-		filterMonths = 0
+	case strings.HasPrefix(token, "period:"):
+		// Step 2: period selected → move to confirm
+		periodVal := strings.TrimPrefix(token, "period:")
+		sess.mu.Lock()
+		switch periodVal {
+		case "3m":
+			sess.FilterMonths = 3
+		case "6m":
+			sess.FilterMonths = 6
+		default:
+			sess.FilterMonths = 0
+		}
+		sess.State = StateAwaitingConfirm
+		sess.mu.Unlock()
+		b.showPreviewAndConfirm(chatID, userID)
+
+	default:
+		// Legacy single-step callbacks for backward compatibility
+		sess.mu.Lock()
+		sess.FilterType = ""
+		sess.FilterMonths = 0
+		sess.State = StateAwaitingConfirm
+		sess.mu.Unlock()
+		b.showPreviewAndConfirm(chatID, userID)
 	}
-
-	sess.mu.Lock()
-	sess.FilterType = filterType
-	sess.FilterMonths = filterMonths
-	sess.State = StateAwaitingConfirm
-	sess.mu.Unlock()
-
-	b.showPreviewAndConfirm(chatID, userID)
 }
 
 // --- Step 0: Start ---

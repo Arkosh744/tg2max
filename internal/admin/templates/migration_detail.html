@@ -1,0 +1,139 @@
+{{template "layout" .}}
+
+{{define "content"}}
+<div class="space-y-6">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between">
+        <div>
+            <a href="/admin/migrations"
+               class="inline-flex items-center text-sm text-slate-400 hover:text-slate-200 transition-colors mb-2">
+                &larr; Все миграции
+            </a>
+            <h1 class="text-2xl font-bold text-white">Миграция #{{.Migration.ID}}</h1>
+        </div>
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold {{statusBadge .Migration.Status}}">
+            {{statusLabel .Migration.Status}}
+        </span>
+    </div>
+
+    <!-- Progress bar for active migration -->
+    {{if eq .Migration.Status "started"}}
+    <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+        <div class="flex items-center justify-between mb-2">
+            <span class="text-sm text-slate-300 font-medium">Прогресс отправки</span>
+            <span class="text-sm text-slate-400">
+                {{.Migration.SentMessages}} / {{.Migration.TotalMessages}}
+            </span>
+        </div>
+        <div class="w-full bg-slate-700 rounded-full h-2.5 overflow-hidden">
+            <div class="bg-blue-500 h-2.5 rounded-full animate-pulse" style="width: 60%"></div>
+        </div>
+    </div>
+    {{end}}
+
+    <!-- Details grid -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+        <!-- Left column -->
+        <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+            <div class="px-4 py-3 border-b border-slate-700">
+                <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Назначение</h2>
+            </div>
+            <dl class="divide-y divide-slate-700">
+                <div class="px-4 py-3 flex items-start justify-between gap-4">
+                    <dt class="text-sm text-slate-400 shrink-0">Чат Max</dt>
+                    <dd class="text-sm text-white text-right">
+                        {{if .Migration.MaxChatName}}
+                        <span class="font-medium">{{.Migration.MaxChatName}}</span>
+                        <span class="block text-slate-500 text-xs font-mono">{{.Migration.MaxChatID}}</span>
+                        {{else}}
+                        <span class="font-mono text-slate-300">{{.Migration.MaxChatID}}</span>
+                        {{end}}
+                    </dd>
+                </div>
+                <div class="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt class="text-sm text-slate-400 shrink-0">Пользователь</dt>
+                    <dd class="text-sm font-mono text-slate-300">{{.Migration.UserID}}</dd>
+                </div>
+                <div class="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt class="text-sm text-slate-400 shrink-0">Фильтр</dt>
+                    <dd class="text-sm text-slate-300">
+                        {{if eq .Migration.FilterType "months"}}
+                        Последние {{.Migration.FilterMonths}} мес.
+                        {{else if eq .Migration.FilterType "all"}}
+                        Все сообщения
+                        {{else}}
+                        {{.Migration.FilterType}}
+                        {{end}}
+                    </dd>
+                </div>
+                <div class="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt class="text-sm text-slate-400 shrink-0">Сообщений</dt>
+                    <dd class="text-sm text-white font-medium">
+                        {{.Migration.SentMessages}}
+                        <span class="text-slate-500 font-normal">/{{.Migration.TotalMessages}}</span>
+                    </dd>
+                </div>
+            </dl>
+        </div>
+
+        <!-- Right column -->
+        <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+            <div class="px-4 py-3 border-b border-slate-700">
+                <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Хронология</h2>
+            </div>
+            <dl class="divide-y divide-slate-700">
+                <div class="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt class="text-sm text-slate-400 shrink-0">Начало</dt>
+                    <dd class="text-sm text-slate-300 text-right whitespace-nowrap">{{formatTime .Migration.StartedAt}}</dd>
+                </div>
+                <div class="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt class="text-sm text-slate-400 shrink-0">Завершение</dt>
+                    <dd class="text-sm text-slate-300 text-right whitespace-nowrap">
+                        {{if .Migration.FinishedAt}}
+                        {{formatTime .Migration.FinishedAt}}
+                        {{else}}
+                        <span class="text-slate-500 italic">—</span>
+                        {{end}}
+                    </dd>
+                </div>
+                <div class="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt class="text-sm text-slate-400 shrink-0">Длительность</dt>
+                    <dd class="text-sm text-slate-300">
+                        {{if gt .Migration.DurationSeconds 0}}
+                        {{formatDuration .Migration.DurationSeconds}}
+                        {{else}}
+                        <span class="text-slate-500 italic">—</span>
+                        {{end}}
+                    </dd>
+                </div>
+                <div class="px-4 py-3 flex items-center justify-between gap-4">
+                    <dt class="text-sm text-slate-400 shrink-0">Upload ID</dt>
+                    <dd class="text-sm font-mono text-slate-400">{{.Migration.UploadID}}</dd>
+                </div>
+            </dl>
+        </div>
+
+    </div>
+
+    <!-- Error block -->
+    {{if .Migration.ErrorMessage}}
+    <div class="bg-red-950/50 border border-red-800/60 rounded-xl p-4">
+        <div class="flex items-start gap-3">
+            <div class="shrink-0 mt-0.5">
+                <svg class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+                </svg>
+            </div>
+            <div>
+                <h3 class="text-sm font-semibold text-red-400 mb-1">Ошибка выполнения</h3>
+                <p class="text-sm text-red-300 font-mono break-all">{{.Migration.ErrorMessage}}</p>
+            </div>
+        </div>
+    </div>
+    {{end}}
+
+</div>
+{{end}}

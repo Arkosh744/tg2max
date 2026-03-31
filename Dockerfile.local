@@ -1,7 +1,7 @@
 FROM alpine:3.21
 RUN apk --no-cache add ca-certificates && \
-    addgroup -S app && adduser -S app -G app
+    adduser -D -H -u 10001 appuser
 WORKDIR /app
 COPY bin/tg2max-bot-linux ./tg2max-bot
-USER app
+USER appuser
 CMD ["./tg2max-bot"]

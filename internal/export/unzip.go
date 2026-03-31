@@ -125,67 +125,103 @@ func formatDate(unixStr string) string {
 	return fmt.Sprintf("%d %s %d", t.Day(), ruMonths[t.Month()-1], t.Year())
 }
 
-// Analyze reads result.json and returns export statistics.
+// analyzeMessage is a minimal message shape used only for streaming Analyze.
+type analyzeMessage struct {
+	Type         string `json:"type"`
+	DateUnixtime string `json:"date_unixtime"`
+	Photo        string `json:"photo"`
+	File         string `json:"file"`
+	MediaType    string `json:"media_type"`
+}
+
+// Analyze reads result.json and returns export statistics using streaming JSON
+// decoding to avoid loading the entire file into memory.
 func Analyze(resultJSONPath string) (ExportInfo, error) {
-	data, err := os.ReadFile(resultJSONPath)
+	f, err := os.Open(resultJSONPath)
 	if err != nil {
 		return ExportInfo{}, fmt.Errorf("read %s: %w", resultJSONPath, err)
 	}
+	defer f.Close()
 
-	var export struct {
-		Name     string `json:"name"`
-		Messages []struct {
-			Type         string `json:"type"`
-			DateUnixtime string `json:"date_unixtime"`
-			Photo        string `json:"photo"`
-			File         string `json:"file"`
-			MediaType    string `json:"media_type"`
-		} `json:"messages"`
-	}
+	dec := json.NewDecoder(f)
 
-	if err := json.Unmarshal(data, &export); err != nil {
+	// Expect opening '{' of the root object.
+	if _, err := dec.Token(); err != nil {
 		return ExportInfo{}, fmt.Errorf("parse json: %w", err)
 	}
-	data = nil //nolint:wastedassign
 
 	baseDir := filepath.Dir(resultJSONPath)
 	var info ExportInfo
-	info.ChatName = export.Name
-
 	var firstDate, lastDate string
-	for _, m := range export.Messages {
-		if m.Type != "message" {
-			continue
-		}
-		info.Messages++
 
-		if firstDate == "" && m.DateUnixtime != "" {
-			firstDate = m.DateUnixtime
-		}
-		if m.DateUnixtime != "" {
-			lastDate = m.DateUnixtime
+	// Scan top-level keys.
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return ExportInfo{}, fmt.Errorf("parse json: %w", err)
 		}
 
-		mediaPath := ""
-		switch {
-		case m.Photo != "":
-			info.Photos++
-			mediaPath = m.Photo
-		case m.MediaType == "video_file" || m.MediaType == "video_message":
-			info.Videos++
-			mediaPath = m.File
-		case m.File != "" && m.MediaType == "":
-			info.Documents++
-			mediaPath = m.File
-		case m.File != "":
-			info.Other++
-			mediaPath = m.File
-		}
+		switch key.(string) {
+		case "name":
+			if err := dec.Decode(&info.ChatName); err != nil {
+				return ExportInfo{}, fmt.Errorf("parse json: %w", err)
+			}
 
-		if mediaPath != "" {
-			fullPath := filepath.Join(baseDir, mediaPath)
-			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-				info.MissingMedia++
+		case "messages":
+			// Expect opening '['.
+			if _, err := dec.Token(); err != nil {
+				return ExportInfo{}, fmt.Errorf("parse json: expected messages array: %w", err)
+			}
+			for dec.More() {
+				var m analyzeMessage
+				if err := dec.Decode(&m); err != nil {
+					return ExportInfo{}, fmt.Errorf("parse json: %w", err)
+				}
+				if m.Type != "message" {
+					continue
+				}
+				info.Messages++
+
+				if firstDate == "" && m.DateUnixtime != "" {
+					firstDate = m.DateUnixtime
+				}
+				if m.DateUnixtime != "" {
+					lastDate = m.DateUnixtime
+				}
+
+				mediaPath := ""
+				switch {
+				case m.Photo != "":
+					info.Photos++
+					mediaPath = m.Photo
+				case m.MediaType == "video_file" || m.MediaType == "video_message":
+					info.Videos++
+					mediaPath = m.File
+				case m.File != "" && m.MediaType == "":
+					info.Documents++
+					mediaPath = m.File
+				case m.File != "":
+					info.Other++
+					mediaPath = m.File
+				}
+
+				if mediaPath != "" && !strings.Contains(mediaPath, "(File not included") {
+					fullPath := filepath.Join(baseDir, mediaPath)
+					if _, statErr := os.Stat(fullPath); os.IsNotExist(statErr) {
+						info.MissingMedia++
+					}
+				}
+			}
+			// Consume closing ']' so the outer loop can continue reading sibling keys.
+			if _, err := dec.Token(); err != nil {
+				return ExportInfo{}, fmt.Errorf("parse json: %w", err)
+			}
+
+		default:
+			// Skip unknown top-level fields.
+			var discard json.RawMessage
+			if err := dec.Decode(&discard); err != nil {
+				return ExportInfo{}, fmt.Errorf("parse json: %w", err)
 			}
 		}
 	}

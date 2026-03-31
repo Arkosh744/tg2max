@@ -38,29 +38,54 @@ func (r *Reader) BasePath() string {
 }
 
 func (r *Reader) ReadAll(ctx context.Context) (ReadResult, error) {
-	data, err := os.ReadFile(r.exportPath)
+	f, err := os.Open(r.exportPath)
 	if err != nil {
 		return ReadResult{}, fmt.Errorf("read export file %s: %w", r.exportPath, err)
 	}
+	defer f.Close()
 
-	var export tgExport
-	if err := json.Unmarshal(data, &export); err != nil {
+	dec := json.NewDecoder(f)
+
+	// Expect opening '{' of the root object.
+	if _, err := dec.Token(); err != nil {
 		return ReadResult{}, fmt.Errorf("parse export json: %w", err)
 	}
 
-	// Free raw bytes after parsing; keep only the decoded structs.
-	data = nil
-
-	result := ReadResult{
-		Total: len(export.Messages),
+	// Scan top-level keys until we find "messages".
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return ReadResult{}, fmt.Errorf("parse export json: %w", err)
+		}
+		if key.(string) == "messages" {
+			break
+		}
+		// Skip the value for any other top-level key.
+		var discard json.RawMessage
+		if err := dec.Decode(&discard); err != nil {
+			return ReadResult{}, fmt.Errorf("parse export json: %w", err)
+		}
 	}
 
-	for _, msg := range export.Messages {
+	// Expect opening '[' of the messages array.
+	if _, err := dec.Token(); err != nil {
+		return ReadResult{}, fmt.Errorf("parse export json: expected messages array: %w", err)
+	}
+
+	var result ReadResult
+	for dec.More() {
 		select {
 		case <-ctx.Done():
 			return ReadResult{}, ctx.Err()
 		default:
 		}
+
+		var msg tgMessage
+		if err := dec.Decode(&msg); err != nil {
+			return ReadResult{}, fmt.Errorf("parse export json: %w", err)
+		}
+
+		result.Total++
 
 		if msg.Type != "message" {
 			continue
@@ -149,8 +174,10 @@ func (r *Reader) parseTimestamp(msg tgMessage) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("no valid timestamp for message %d", msg.ID)
 }
 
+const notIncludedPlaceholder = "(File not included. Change data exporting settings to download.)"
+
 func (r *Reader) attachMedia(m *models.Message, msg tgMessage) {
-	if msg.Photo != "" {
+	if msg.Photo != "" && msg.Photo != notIncludedPlaceholder {
 		if path, err := r.safeMediaPath(msg.Photo); err == nil {
 			m.Media = append(m.Media, models.MediaFile{
 				Type:     models.MediaPhoto,
@@ -161,7 +188,7 @@ func (r *Reader) attachMedia(m *models.Message, msg tgMessage) {
 		}
 	}
 
-	if msg.File != "" && msg.Photo == "" {
+	if msg.File != "" && msg.File != notIncludedPlaceholder && msg.Photo == "" {
 		if path, err := r.safeMediaPath(msg.File); err == nil {
 			mediaType := r.resolveMediaType(msg.MediaType)
 			m.Media = append(m.Media, models.MediaFile{
