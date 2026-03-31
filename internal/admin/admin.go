@@ -38,6 +38,7 @@ type Server struct {
 	secret  []byte
 	tmpl    *template.Template
 	mux     *http.ServeMux
+	broker  *SSEBroker
 }
 
 // New creates a new admin server.
@@ -48,6 +49,7 @@ func New(store storage.Storage, bot BotInfo, cfg Config, log *slog.Logger) *Serv
 		log:    log,
 		cfg:    cfg,
 		secret: []byte(cfg.Secret),
+		broker: newSSEBroker(),
 	}
 	s.tmpl = s.parseTemplates()
 	s.mux = s.setupRoutes()
@@ -63,6 +65,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
+	go s.sseLoop(ctx)
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

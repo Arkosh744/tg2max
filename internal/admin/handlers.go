@@ -32,8 +32,14 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	stats, _ := s.store.GetStats(r.Context())
-	recent, _ := s.store.GetRecentMigrations(r.Context(), 5)
+	stats, err := s.store.GetStats(r.Context())
+	if err != nil {
+		s.log.Error("dashboard: get stats failed", "error", err)
+	}
+	recent, err := s.store.GetRecentMigrations(r.Context(), 5)
+	if err != nil {
+		s.log.Error("dashboard: get recent migrations failed", "error", err)
+	}
 
 	s.render(w, "dashboard.html", pageData{
 		Title:   "Dashboard",
@@ -52,11 +58,16 @@ func (s *Server) handleMigrations(w http.ResponseWriter, r *http.Request) {
 	}
 	status := r.URL.Query().Get("status")
 
-	migrations, total, _ := s.store.ListMigrations(r.Context(), storage.MigrationFilter{
+	migrations, total, err := s.store.ListMigrations(r.Context(), storage.MigrationFilter{
 		Status:  status,
 		Page:    page,
 		PerPage: 20,
 	})
+	if err != nil {
+		s.log.Error("list migrations failed", "error", err)
+		http.Error(w, "Ошибка загрузки миграций", http.StatusInternalServerError)
+		return
+	}
 
 	totalPages := (total + 19) / 20
 
@@ -79,7 +90,12 @@ func (s *Server) handleMigrationDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, err := s.store.GetMigration(r.Context(), id)
-	if err != nil || m == nil {
+	if err != nil {
+		s.log.Error("get migration failed", "id", id, "error", err)
+		http.Error(w, "Ошибка загрузки миграции", http.StatusInternalServerError)
+		return
+	}
+	if m == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -97,7 +113,12 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		page = 1
 	}
 
-	users, total, _ := s.store.ListUsers(r.Context(), page, 20)
+	users, total, err := s.store.ListUsers(r.Context(), page, 20)
+	if err != nil {
+		s.log.Error("list users failed", "error", err)
+		http.Error(w, "Ошибка загрузки пользователей", http.StatusInternalServerError)
+		return
+	}
 	totalPages := (total + 19) / 20
 
 	s.render(w, "users.html", pageData{
@@ -118,11 +139,19 @@ func (s *Server) handleUserDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, err := s.store.GetUser(r.Context(), id)
-	if err != nil || u == nil {
+	if err != nil {
+		s.log.Error("get user failed", "id", id, "error", err)
+		http.Error(w, "Ошибка загрузки пользователя", http.StatusInternalServerError)
+		return
+	}
+	if u == nil {
 		http.NotFound(w, r)
 		return
 	}
-	history, _ := s.store.GetUserHistory(r.Context(), id, 50)
+	history, err := s.store.GetUserHistory(r.Context(), id, 50)
+	if err != nil {
+		s.log.Error("get user history failed", "id", id, "error", err)
+	}
 
 	s.render(w, "user_detail.html", pageData{
 		Title:   u.FirstName + " " + u.LastName,
@@ -136,17 +165,29 @@ func (s *Server) handleUserDetail(w http.ResponseWriter, r *http.Request) {
 // --- HTMX Partials ---
 
 func (s *Server) handlePartialStats(w http.ResponseWriter, r *http.Request) {
-	stats, _ := s.store.GetStats(r.Context())
-	s.tmpl.ExecuteTemplate(w, "stats_cards", pageData{Stats: stats})
+	stats, err := s.store.GetStats(r.Context())
+	if err != nil {
+		s.log.Error("partial stats failed", "error", err)
+	}
+	if err := s.tmpl.ExecuteTemplate(w, "stats_cards", pageData{Stats: stats}); err != nil {
+		s.log.Error("render stats_cards failed", "error", err)
+	}
 }
 
 func (s *Server) handlePartialActive(w http.ResponseWriter, r *http.Request) {
-	s.tmpl.ExecuteTemplate(w, "active_migration", pageData{LiveMig: s.bot.ActiveMigration()})
+	if err := s.tmpl.ExecuteTemplate(w, "active_migration", pageData{LiveMig: s.bot.ActiveMigration()}); err != nil {
+		s.log.Error("render active_migration failed", "error", err)
+	}
 }
 
 func (s *Server) handlePartialRecent(w http.ResponseWriter, r *http.Request) {
-	recent, _ := s.store.GetRecentMigrations(r.Context(), 5)
-	s.tmpl.ExecuteTemplate(w, "recent_migrations", pageData{Recent: recent})
+	recent, err := s.store.GetRecentMigrations(r.Context(), 5)
+	if err != nil {
+		s.log.Error("partial recent failed", "error", err)
+	}
+	if err := s.tmpl.ExecuteTemplate(w, "recent_migrations", pageData{Recent: recent}); err != nil {
+		s.log.Error("render recent_migrations failed", "error", err)
+	}
 }
 
 // --- Helpers ---

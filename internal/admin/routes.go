@@ -17,10 +17,13 @@ func (s *Server) setupRoutes() *http.ServeMux {
 	mux.Handle("GET /admin/users", s.requireAuth(http.HandlerFunc(s.handleUsers)))
 	mux.Handle("GET /admin/users/{id}", s.requireAuth(http.HandlerFunc(s.handleUserDetail)))
 
-	// HTMX partials
+	// HTMX partials (polling fallback)
 	mux.Handle("GET /admin/partials/stats", s.requireAuth(http.HandlerFunc(s.handlePartialStats)))
 	mux.Handle("GET /admin/partials/active", s.requireAuth(http.HandlerFunc(s.handlePartialActive)))
 	mux.Handle("GET /admin/partials/recent", s.requireAuth(http.HandlerFunc(s.handlePartialRecent)))
+
+	// SSE live updates
+	mux.Handle("GET /admin/events", s.requireAuth(http.HandlerFunc(s.handleSSE)))
 
 	return mux
 }
