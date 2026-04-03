@@ -177,6 +177,10 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		b.startCloneMigration(ctx, chatID, userID)
 	case cb.Data == "cancel_clone":
 		b.cancelClone(chatID, userID)
+	case cb.Data == "resume_export":
+		b.handleResumeExport(chatID, userID)
+	case cb.Data == "reset_cursor":
+		b.handleResetCursor(chatID, userID)
 	}
 }
 
@@ -220,15 +224,22 @@ func (b *Bot) handleHelp(msg *tgbotapi.Message) {
 	if b.tgAPIEndpoint != "" {
 		helpLimit = "2 ГБ"
 	}
-	text := fmt.Sprintf(`Как использовать:
+	text := fmt.Sprintf(`📦 Способ 1 — ZIP-экспорт:
 
-1. Экспортируй чат в Telegram Desktop
-   Чат → ⋯ → Export Chat History → JSON + медиа
-2. Заархивируй папку в ZIP (макс %s)
-3. Отправь ZIP сюда`, helpLimit) + `
-4. Введи название чата в Max для поиска
-   (или числовой ID чата)
-5. Проверь предпросмотр и подтверди
+1. Открой Telegram Desktop (не мобильный!)
+2. Зайди в нужный чат/канал
+3. Нажми ⋯ (три точки) → Export Chat History
+4. Формат: выбери "Machine-readable JSON"
+5. Отметь галочки: Photos, Videos, Files (что нужно)
+6. Размер медиа: рекомендуем до 8 МБ
+7. Нажми Export, дождись завершения
+8. Заархивируй полученную папку в ZIP (макс %s)
+9. Отправь ZIP сюда
+10. Выбери чат Max и подтверди
+
+📢 Способ 2 — Клон канала:
+/clone — авторизуйся через свой TG-аккаунт
+Бот сам прочитает канал и перенесёт с медиа.
 
 Если миграция прервалась — отправь тот же ZIP повторно, прогресс сохранён.
 
@@ -236,8 +247,9 @@ func (b *Bot) handleHelp(msg *tgbotapi.Message) {
 /clone — клонировать канал через аккаунт TG
 /setchat <id> — задать Max chat ID вручную
 /status — текущий статус
+/history — история миграций
 /cancel — отменить/сбросить
-/reset — полный сброс сессии`
+/reset — полный сброс сессии`, helpLimit)
 	b.reply(msg.Chat.ID, text)
 }
 

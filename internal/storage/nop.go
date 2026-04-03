@@ -1,6 +1,9 @@
 package storage
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Nop is a no-op storage that discards all writes.
 // Used when no db_path is configured.
@@ -22,4 +25,5 @@ func (Nop) GetRecentMigrations(context.Context, int) ([]Migration, error)       
 func (Nop) SaveUserbotSession(context.Context, int64, []byte) error                    { return nil }
 func (Nop) LoadUserbotSession(context.Context, int64) ([]byte, error)                  { return nil, nil }
 func (Nop) DeleteUserbotSession(context.Context, int64) error                          { return nil }
+func (Nop) CleanExpiredUserbotSessions(context.Context, time.Duration) (int64, error)  { return 0, nil }
 func (Nop) Close() error                                                               { return nil }

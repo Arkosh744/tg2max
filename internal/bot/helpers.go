@@ -3,6 +3,8 @@ package bot
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -32,6 +34,29 @@ func (b *Bot) editMessage(chatID int64, msgID int, text string) {
 	if _, err := b.api.Send(edit); err != nil {
 		b.log.Debug("failed to edit message", "error", err)
 	}
+}
+
+const userbotSessionMaxAge = 30 * 24 * time.Hour // 30 days
+
+// startUserbotSessionCleanup periodically removes expired MTProto sessions from the database.
+func (b *Bot) startUserbotSessionCleanup(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				removed, err := b.storage.CleanExpiredUserbotSessions(ctx, userbotSessionMaxAge)
+				if err != nil {
+					b.log.Warn("failed to clean expired userbot sessions", "error", err)
+				} else if removed > 0 {
+					b.log.Info("cleaned expired userbot sessions", "removed", removed)
+				}
+			}
+		}
+	}()
 }
 
 // deleteUserMessage attempts to delete a user's message from the chat (for sensitive data like auth codes).
@@ -142,5 +167,40 @@ func (b *Bot) notifyWaiting() {
 	for _, chatID := range users {
 		b.reply(chatID, "🔔 Бот свободен! Можешь отправить ZIP для миграции.")
 	}
+}
+
+// handleResumeExport continues migration from the saved cursor position.
+func (b *Bot) handleResumeExport(chatID int64, userID int64) {
+	sess := b.sessions.Get(userID)
+	if sess == nil || sess.ExportPath == "" {
+		b.reply(chatID, "Нет загруженного экспорта.")
+		return
+	}
+	sess.mu.Lock()
+	sess.State = StateAwaitingChatSearch
+	sess.mu.Unlock()
+	b.replyWithKeyboard(chatID, "Продолжаем с сохранённым прогрессом.\nВведи название чата в Max для поиска.", keyboardMain())
+}
+
+// handleResetCursor removes the cursor file and restarts migration from scratch.
+func (b *Bot) handleResetCursor(chatID int64, userID int64) {
+	sess := b.sessions.Get(userID)
+	if sess == nil || sess.ExportPath == "" {
+		b.reply(chatID, "Нет загруженного экспорта.")
+		return
+	}
+	sess.mu.Lock()
+	// Remove cursor to start from scratch
+	if sess.CursorFile != "" {
+		os.Remove(sess.CursorFile)
+		sess.CursorFile = ""
+		sess.CursorName = ""
+	}
+	// Also check for cursor.json next to the export
+	dir := filepath.Dir(sess.ExportPath)
+	os.Remove(filepath.Join(dir, "cursor.json"))
+	sess.State = StateAwaitingChatSearch
+	sess.mu.Unlock()
+	b.replyWithKeyboard(chatID, "Прогресс сброшен. Миграция начнётся с начала.\nВведи название чата в Max для поиска.", keyboardMain())
 }
 

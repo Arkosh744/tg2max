@@ -148,6 +148,9 @@ type Storage interface {
 	// DeleteUserbotSession removes the stored MTProto session for a user.
 	DeleteUserbotSession(ctx context.Context, userID int64) error
 
+	// CleanExpiredUserbotSessions removes sessions older than the given duration.
+	CleanExpiredUserbotSessions(ctx context.Context, maxAge time.Duration) (int64, error)
+
 	// Close closes the storage connection.
 	Close() error
 }

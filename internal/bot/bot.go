@@ -230,6 +230,7 @@ func (b *Bot) isAdmin(userID int64) bool {
 func (b *Bot) Run(ctx context.Context) error {
 	b.log.Info("bot started", "username", b.api.Self.UserName)
 	b.sessions.StartCleanup(ctx)
+	b.startUserbotSessionCleanup(ctx)
 
 	// Crash recovery: mark orphaned migrations as failed
 	if active, err := b.storage.GetActiveMigration(ctx); err == nil && active != nil {

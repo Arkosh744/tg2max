@@ -113,7 +113,6 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 
 		if oldHash != "" && oldHash == newHash {
 			if _, statErr := os.Stat(oldExportDir); statErr == nil {
-				// Restore session state and show appropriate keyboard
 				sess.mu.Lock()
 				state := sess.State
 				sess.mu.Unlock()
@@ -123,9 +122,17 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 				case StateAwaitingConfirm:
 					b.replyWithKeyboard(msg.Chat.ID, "Экспорт уже загружен. Нажми «Подтвердить перенос».", keyboardAwaitingConfirm())
 				default:
-					b.replyWithKeyboard(msg.Chat.ID, "Экспорт уже загружен.\nВведи название чата в Max для поиска.", keyboardMain())
+					keyboard := tgbotapi.NewInlineKeyboardMarkup(
+						tgbotapi.NewInlineKeyboardRow(
+							tgbotapi.NewInlineKeyboardButtonData("▶️ Продолжить с прогрессом", "resume_export"),
+							tgbotapi.NewInlineKeyboardButtonData("🔄 Начать заново", "reset_cursor"),
+						),
+					)
+					reply := tgbotapi.NewMessage(msg.Chat.ID, "Экспорт уже загружен. Продолжить с сохранённым прогрессом или начать заново?")
+					reply.ReplyMarkup = keyboard
+					b.api.Send(reply)
 				}
-				os.RemoveAll(userDir) // clean up duplicate extraction
+				os.RemoveAll(userDir)
 				return
 			}
 		}

@@ -81,9 +81,18 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
-		log.Info("shutting down...")
+		sig := <-sigCh
+		log.Info("received signal, initiating graceful shutdown", "signal", sig)
 		cancel()
+		// Give active migration up to 30s to save cursor before force exit
+		select {
+		case sig = <-sigCh:
+			log.Warn("second signal received, forcing exit", "signal", sig)
+			os.Exit(1)
+		case <-time.After(30 * time.Second):
+			log.Warn("graceful shutdown timeout, forcing exit")
+			os.Exit(1)
+		}
 	}()
 
 	// Start admin web UI if enabled

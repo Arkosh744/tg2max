@@ -490,6 +490,15 @@ func (s *SQLite) DeleteUserbotSession(ctx context.Context, userID int64) error {
 	return nil
 }
 
+func (s *SQLite) CleanExpiredUserbotSessions(ctx context.Context, maxAge time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-maxAge).UTC().Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM userbot_sessions WHERE updated_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("clean expired userbot sessions: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 func (s *SQLite) Close() error {
 	return s.db.Close()
 }
