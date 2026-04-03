@@ -119,7 +119,7 @@ func (s *SessionStore) Delete(userID int64) {
 }
 
 // GetActiveMigration returns the session of the user currently running a migration,
-// or nil if no migration is in progress.
+// or nil if no migration is in progress. Only one migration runs at a time (Max API 1 RPS limit).
 func (s *SessionStore) GetActiveMigration() *Session {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
