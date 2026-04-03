@@ -28,5 +28,17 @@ func (s *Server) setupRoutes() *http.ServeMux {
 	// SSE live updates
 	mux.Handle("GET /admin/events", s.requireAuth(http.HandlerFunc(s.handleSSE)))
 
+	// JSON API for Telegram Mini App (WebApp auth)
+	mux.Handle("GET /api/stats", s.requireWebAppAuth(http.HandlerFunc(s.handleAPIStats)))
+	mux.Handle("GET /api/live", s.requireWebAppAuth(http.HandlerFunc(s.handleAPILive)))
+	mux.Handle("GET /api/chart", s.requireWebAppAuth(http.HandlerFunc(s.handleAPIChart)))
+	mux.Handle("GET /api/migrations", s.requireWebAppAuth(http.HandlerFunc(s.handleAPIMigrations)))
+	mux.Handle("GET /api/migrations/{id}", s.requireWebAppAuth(http.HandlerFunc(s.handleAPIMigrationDetail)))
+	mux.Handle("GET /api/users", s.requireWebAppAuth(http.HandlerFunc(s.handleAPIUsers)))
+	mux.Handle("GET /api/users/{id}", s.requireWebAppAuth(http.HandlerFunc(s.handleAPIUserDetail)))
+
+	// Telegram Mini App static page
+	mux.HandleFunc("GET /miniapp", s.handleMiniApp)
+
 	return mux
 }
