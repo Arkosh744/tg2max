@@ -24,11 +24,9 @@ type BotInfo interface {
 
 // Config holds admin server configuration.
 type Config struct {
-	Addr         string  // listen address, e.g. ":8080"
-	Password     string  // admin password
-	Secret       string  // cookie signing secret
-	BotToken     string  // Telegram bot token (for WebApp initData verification)
-	AdminUserIDs []int64 // admin user IDs (for WebApp auth)
+	Addr     string // listen address, e.g. ":8080"
+	Password string // admin password
+	Secret   string // cookie signing secret
 }
 
 // Server is the admin web UI HTTP server.

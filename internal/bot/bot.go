@@ -36,8 +36,6 @@ type Bot struct {
 	tgAppHash         string
 	userbotSessionKey []byte // 32 bytes for AES-256-GCM encryption of MTProto sessions
 
-	// Admin Mini App
-	adminWebAppURL string // URL for Telegram Mini App (e.g. "https://example.com/miniapp")
 }
 
 type Config struct {
@@ -56,8 +54,6 @@ type Config struct {
 	TGAppHash         string // Telegram API app_hash from my.telegram.org
 	UserbotSessionKey string // hex-encoded 32-byte AES key for encrypting stored MTProto sessions
 
-	// Admin Mini App — optional, enables /admin command in bot
-	AdminWebAppURL string // public HTTPS URL to /miniapp endpoint (e.g. "https://example.com/miniapp")
 }
 
 func New(cfg Config, log *slog.Logger) (*Bot, error) {
@@ -141,7 +137,6 @@ func New(cfg Config, log *slog.Logger) (*Bot, error) {
 		tgAppID:           cfg.TGAppID,
 		tgAppHash:         cfg.TGAppHash,
 		userbotSessionKey: sessionKey,
-		adminWebAppURL:    cfg.AdminWebAppURL,
 	}
 
 	if cfg.TGAppID != 0 && cfg.TGAppHash != "" {
@@ -257,7 +252,6 @@ func (b *Bot) Run(ctx context.Context) error {
 		tgbotapi.BotCommand{Command: "reset", Description: "Сбросить сессию"},
 		tgbotapi.BotCommand{Command: "stats", Description: "Статистика (админ)"},
 		tgbotapi.BotCommand{Command: "clone", Description: "Клонировать канал через аккаунт"},
-		tgbotapi.BotCommand{Command: "admin", Description: "Панель администратора"},
 	)
 	b.api.Request(commands)
 

@@ -202,13 +202,6 @@ func (s *Server) handlePartialRecent(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// --- Telegram Mini App ---
-
-func (s *Server) handleMiniApp(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	s.tmpl.ExecuteTemplate(w, "miniapp.html", nil)
-}
-
 // --- Health Check ---
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

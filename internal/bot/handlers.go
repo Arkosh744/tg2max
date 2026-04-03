@@ -42,8 +42,6 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.handleStats(ctx, msg)
 		case "clone":
 			b.handleClone(msg)
-		case "admin":
-			b.handleAdmin(msg)
 		case "cancel":
 			b.handleCancel(msg)
 		case "reset":
@@ -253,27 +251,6 @@ func (b *Bot) handleHelp(msg *tgbotapi.Message) {
 /cancel — отменить/сбросить
 /reset — полный сброс сессии`, helpLimit)
 	b.reply(msg.Chat.ID, text)
-}
-
-// --- Admin Mini App ---
-
-func (b *Bot) handleAdmin(msg *tgbotapi.Message) {
-	if !b.isAdmin(msg.From.ID) {
-		b.reply(msg.Chat.ID, "Команда доступна только администраторам.")
-		return
-	}
-	if b.adminWebAppURL == "" {
-		b.reply(msg.Chat.ID, "Admin Mini App не настроен. Задайте ADMIN_WEBAPP_URL.")
-		return
-	}
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonURL("📊 Открыть Admin Panel", b.adminWebAppURL),
-		),
-	)
-	reply := tgbotapi.NewMessage(msg.Chat.ID, "Нажми кнопку чтобы открыть панель администратора:")
-	reply.ReplyMarkup = keyboard
-	b.api.Send(reply)
 }
 
 // --- Status / Cancel ---

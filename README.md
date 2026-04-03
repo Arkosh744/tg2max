@@ -102,23 +102,7 @@ docker compose up -d
 Доступна по адресу `http://VPS_IP:8080/admin/` (или `localhost:8080` локально).
 Вход по паролю (`ADMIN_PASSWORD`). Дашборд с live-обновлениями (SSE), графики, миграции, юзеры.
 
-#### Admin panel (Telegram Mini App)
-
-Та же админка, но прямо в Telegram — через команду `/admin`.
-Требуется HTTPS URL. Бесплатный вариант без домена — **Cloudflare Tunnel**:
-
-```bash
-# Установить: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
-cloudflared tunnel --url http://localhost:8080
-# Выведет: https://random-words.trycloudflare.com
-# Добавить в .env:
-ADMIN_WEBAPP_URL=https://random-words.trycloudflare.com/miniapp
-```
-
-После этого `/admin` в боте откроет Mini App с дашбордом прямо в Telegram.
-Без `ADMIN_WEBAPP_URL` — веб-панель по IP работает как обычно.
-
-Команды: `/help`, `/status`, `/cancel`, `/reset`, `/clone`, `/admin`, `/setchat <id>`, `/history`, `/stats`
+Команды: `/help`, `/status`, `/cancel`, `/reset`, `/clone`, `/setchat <id>`, `/history`, `/stats`
 
 ## CLI режим
 
@@ -149,7 +133,6 @@ cp configs/config.example.yaml config.yaml
 | `tg_app_hash` | `TG_APP_HASH` | Telegram API Hash (для clone) | -- |
 | -- | `USERBOT_SESSION_KEY` | AES-256 ключ (hex, 64 символа) | -- |
 | -- | `ADMIN_SECURE_COOKIE` | Secure flag на cookie | true |
-| `admin_webapp_url` | `ADMIN_WEBAPP_URL` | HTTPS URL Mini App (для /admin в TG) | -- |
 
 ## Архитектура
 

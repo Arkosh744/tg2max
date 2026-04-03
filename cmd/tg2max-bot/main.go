@@ -41,8 +41,6 @@ type Config struct {
 	TGAppHash         string `yaml:"tg_app_hash"`
 	UserbotSessionKey string `yaml:"userbot_session_key"`
 
-	// Admin Mini App
-	AdminWebAppURL string `yaml:"admin_webapp_url"`
 }
 
 func main() {
@@ -71,7 +69,6 @@ func main() {
 		TGAppID:           cfg.TGAppID,
 		TGAppHash:         cfg.TGAppHash,
 		UserbotSessionKey: cfg.UserbotSessionKey,
-		AdminWebAppURL:    cfg.AdminWebAppURL,
 	}, log)
 	if err != nil {
 		log.Error("failed to create bot", "error", err)
@@ -114,11 +111,9 @@ func main() {
 			cfg.AdminAddr = ":8080"
 		}
 		adminSrv := admin.New(b.Storage(), b, admin.Config{
-			Addr:         cfg.AdminAddr,
-			Password:     cfg.AdminPassword,
-			Secret:       cfg.AdminSecret,
-			BotToken:     cfg.TelegramToken,
-			AdminUserIDs: cfg.AdminUserIDs,
+			Addr:     cfg.AdminAddr,
+			Password: cfg.AdminPassword,
+			Secret:   cfg.AdminSecret,
 		}, log)
 		go func() {
 			if err := adminSrv.ListenAndServe(ctx); err != nil && err != http.ErrServerClosed {
@@ -225,9 +220,6 @@ func loadConfig(path string, log *slog.Logger) Config {
 	}
 	if v := os.Getenv("USERBOT_SESSION_KEY"); v != "" {
 		cfg.UserbotSessionKey = v
-	}
-	if v := os.Getenv("ADMIN_WEBAPP_URL"); v != "" {
-		cfg.AdminWebAppURL = v
 	}
 
 	if cfg.TelegramToken == "" {
