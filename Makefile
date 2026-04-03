@@ -1,19 +1,25 @@
-.PHONY: build build-bot test lint clean restart logs kill up down logs-docker logs-docker-f
+.PHONY: build build-bot build-all build-docker test lint clean restart up down logs logs-f deploy
 
-BOT_LOG := /tmp/tg2max-bot.log
-BOT_BIN := bin/tg2max-bot
-BOT_CFG := config.yaml
+# --- Build ---
 
 build:
 	go build -o bin/tg2max ./cmd/tg2max
 
 build-bot:
-	go build -o $(BOT_BIN) ./cmd/tg2max-bot
+	go build -o bin/tg2max-bot ./cmd/tg2max-bot
 
 build-all: build build-bot
 
+build-docker:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/tg2max-bot-linux ./cmd/tg2max-bot
+
+# --- Test ---
+
 test:
 	go test ./... -count=1
+
+test-cover:
+	go test ./... -count=1 -cover
 
 lint:
 	golangci-lint run ./...
@@ -21,36 +27,37 @@ lint:
 clean:
 	rm -rf bin/
 
-# Kill running bot (use pidfile to avoid killing make itself)
-kill:
-	@if [ -f /tmp/tg2max-bot.pid ]; then kill $$(cat /tmp/tg2max-bot.pid) 2>/dev/null || true; rm -f /tmp/tg2max-bot.pid; fi
+# --- Docker (primary workflow) ---
 
-# Build, kill old, start new, show logs
-restart: build-bot kill
-	@sleep 1
-	@nohup ./$(BOT_BIN) --config $(BOT_CFG) --verbose > $(BOT_LOG) 2>&1 & echo $$! > /tmp/tg2max-bot.pid; echo "PID: $$!"
-	@sleep 2
-	@tail -3 $(BOT_LOG)
+deploy: build-docker
+	docker compose up -d --build tg2max-bot
 
-# Tail logs
-logs:
-	@tail -30 $(BOT_LOG)
-
-# Follow logs
-logs-f:
-	@tail -f $(BOT_LOG)
-
-# Docker Compose
-up:
+up: build-docker
 	docker compose up -d --build
 
 down:
 	docker compose down
 
-logs-docker:
-	docker compose logs --tail=50
+restart:
+	docker compose restart tg2max-bot
 
-logs-docker-f:
-	docker compose logs -f
+logs:
+	docker compose logs tg2max-bot --tail=50
+
+logs-f:
+	docker compose logs tg2max-bot -f
+
+# --- Local (without Docker, needs source .env) ---
+
+BOT_LOG := /tmp/tg2max-bot.log
+
+run-local: build-bot
+	@set -a && source .env && set +a && ./bin/tg2max-bot --verbose > $(BOT_LOG) 2>&1 & echo "PID: $$!"
+
+logs-local:
+	@tail -30 $(BOT_LOG)
+
+logs-local-f:
+	@tail -f $(BOT_LOG)
 
 .DEFAULT_GOAL := build-all

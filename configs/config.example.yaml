@@ -92,3 +92,18 @@ mappings:
 
 # Секрет для подписи session cookie (рандомная строка, автогенерируется если пуст).
 # admin_secret: ""
+
+# =============================================================================
+# Clone Flow — MTProto Userbot (optional)
+# =============================================================================
+
+# Для команды /clone нужен Telegram API ID и Hash.
+# Получить на https://my.telegram.org → API development tools.
+# Переменные окружения TG_APP_ID, TG_APP_HASH имеют приоритет.
+# tg_app_id: 12345
+# tg_app_hash: "your-api-hash"
+
+# AES-256 ключ для шифрования MTProto сессий в БД (hex, 64 символа).
+# Сгенерировать: openssl rand -hex 32
+# Переменная окружения USERBOT_SESSION_KEY имеет приоритет.
+# userbot_session_key: ""

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/arkosh/tg2max/internal/tgclient"
 )
 
 type State int
@@ -18,6 +20,18 @@ const (
 	StateAwaitingConfirm               // Preview shown, waiting for confirm
 	StateMigrating                     // Migration in progress
 	StatePaused                        // Migration paused, waiting for resume
+
+	// Clone flow states (userbot channel clone)
+	StateAwaitingPhone         State = 10 // Waiting for TG phone number
+	StateAwaitingCode          State = 11 // Waiting for TG auth code
+	StateAwaitingPassword      State = 12 // Waiting for 2FA password
+	StateAwaitingChannelSearch State = 13 // Authenticated, waiting for channel name
+	StateAwaitingChannelSelect State = 14 // Channel list shown, waiting for selection
+	StateAwaitingDestChoice    State = 15 // Source selected, waiting for TG/Max choice
+	StateAwaitingCloneChat     State = 16 // Max chosen, waiting for Max chat selection
+	StateAwaitingCloneConfirm  State = 17 // All set, waiting for confirm
+	StateCloneMigrating        State = 18 // Clone migration in progress
+	StateClonePaused           State = 19 // Clone migration paused
 )
 
 const sessionTTL = 24 * time.Hour
@@ -42,6 +56,16 @@ type Session struct {
 	MigrationStart time.Time // when migration goroutine started
 	CursorFile     string    // path to cursor.json for progress reads
 	CursorName     string    // cursor chat name for progress lookup
+
+	// Clone flow fields (userbot channel clone)
+	TGClient          *tgclient.Client              // MTProto client for this user
+	TGAuth            *tgclient.BotConversationAuth  // auth flow coordinator
+	TGRunCancel       context.CancelFunc             // cancels the MTProto client Run goroutine
+	SourceChannel     *tgclient.ChannelInfo          // selected source TG channel
+	DestType          string                         // "max" or "tg"
+	CloneChannelID    int64                          // destination channel ID
+	CloneChannelName  string                         // destination channel name
+	TempMediaDir      string                         // temp dir for downloaded media
 
 	mu sync.Mutex
 }
@@ -103,7 +127,8 @@ func (s *SessionStore) GetActiveMigration() *Session {
 		sess.mu.Lock()
 		state := sess.State
 		sess.mu.Unlock()
-		if state == StateMigrating || state == StatePaused {
+		if state == StateMigrating || state == StatePaused ||
+			state == StateCloneMigrating || state == StateClonePaused {
 			return sess
 		}
 	}
@@ -122,9 +147,10 @@ func (s *SessionStore) StartCleanup(ctx context.Context) {
 			case <-ticker.C:
 				s.mu.Lock()
 				for id, sess := range s.sessions {
-					if sess.State == StateMigrating || sess.State == StatePaused {
-						continue
-					}
+					if sess.State == StateMigrating || sess.State == StatePaused ||
+					sess.State == StateCloneMigrating || sess.State == StateClonePaused {
+					continue
+				}
 					if time.Since(sess.LastActive) > sessionTTL {
 						if sess.Cancel != nil {
 							sess.Cancel()

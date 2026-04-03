@@ -202,6 +202,14 @@ func (s *Server) handlePartialRecent(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// --- Health Check ---
+
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"status":"ok","uptime":"%s"}`, s.fmtUptime())
+}
+
 // --- Helpers ---
 
 func (s *Server) render(w http.ResponseWriter, name string, data pageData) {

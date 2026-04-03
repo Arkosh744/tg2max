@@ -34,6 +34,14 @@ func (b *Bot) editMessage(chatID int64, msgID int, text string) {
 	}
 }
 
+// deleteUserMessage attempts to delete a user's message from the chat (for sensitive data like auth codes).
+func (b *Bot) deleteUserMessage(msg *tgbotapi.Message) {
+	del := tgbotapi.NewDeleteMessage(msg.Chat.ID, msg.MessageID)
+	if _, err := b.api.Request(del); err != nil {
+		b.log.Warn("failed to delete user message (bot may not be admin)", "error", err, "chat", msg.Chat.ID)
+	}
+}
+
 // trackUser logs the user in persistent storage (fire-and-forget).
 func (b *Bot) trackUser(ctx context.Context, from *tgbotapi.User) {
 	if from == nil {
@@ -114,6 +122,8 @@ func (b *Bot) checkBusy(chatID int64, userID int64) bool {
 
 // addWaiting adds a chat ID to the notification queue (deduplicates).
 func (b *Bot) addWaiting(chatID int64) {
+	b.waitingMu.Lock()
+	defer b.waitingMu.Unlock()
 	for _, id := range b.waitingUsers {
 		if id == chatID {
 			return
@@ -124,12 +134,13 @@ func (b *Bot) addWaiting(chatID int64) {
 
 // notifyWaiting sends a notification to all waiting users and clears the queue.
 func (b *Bot) notifyWaiting() {
-	if len(b.waitingUsers) == 0 {
-		return
-	}
-	for _, chatID := range b.waitingUsers {
+	b.waitingMu.Lock()
+	users := b.waitingUsers
+	b.waitingUsers = nil
+	b.waitingMu.Unlock()
+
+	for _, chatID := range users {
 		b.reply(chatID, "🔔 Бот свободен! Можешь отправить ZIP для миграции.")
 	}
-	b.waitingUsers = nil
 }
 

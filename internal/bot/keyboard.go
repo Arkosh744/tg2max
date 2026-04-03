@@ -47,3 +47,22 @@ func keyboardPaused() tgbotapi.ReplyKeyboardMarkup {
 		),
 	)
 }
+
+// Clone flow keyboards
+
+func keyboardCloneAuth() tgbotapi.ReplyKeyboardMarkup {
+	return tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("❌ Отмена"),
+		),
+	)
+}
+
+func keyboardCloneSearch() tgbotapi.ReplyKeyboardMarkup {
+	return tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("📊 Статус"),
+			tgbotapi.NewKeyboardButton("❌ Отмена"),
+		),
+	)
+}

@@ -11,7 +11,7 @@ import (
 
 // Schema migrations applied sequentially. Each element is a single SQL batch.
 var migrations = []string{
-	// v1: initial schema
+	// v1: initial schema — users, uploads, migrations
 	`CREATE TABLE IF NOT EXISTS users (
 		telegram_id   INTEGER PRIMARY KEY,
 		username      TEXT NOT NULL DEFAULT '',
@@ -52,6 +52,18 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS idx_migrations_status ON migrations(status);
 	CREATE INDEX IF NOT EXISTS idx_migrations_user   ON migrations(user_id);
 	CREATE INDEX IF NOT EXISTS idx_uploads_user      ON uploads(user_id);`,
+
+	// v2: userbot sessions + clone migration metadata
+	`CREATE TABLE IF NOT EXISTS userbot_sessions (
+		user_id      INTEGER PRIMARY KEY REFERENCES users(telegram_id),
+		session_data BLOB NOT NULL,
+		created_at   TEXT NOT NULL,
+		updated_at   TEXT NOT NULL
+	);
+
+	ALTER TABLE migrations ADD COLUMN source_type TEXT NOT NULL DEFAULT 'zip';
+	ALTER TABLE migrations ADD COLUMN source_channel TEXT NOT NULL DEFAULT '';
+	ALTER TABLE migrations ADD COLUMN dest_type TEXT NOT NULL DEFAULT 'max';`,
 }
 
 // SQLite implements Storage using a local SQLite database.
@@ -130,13 +142,23 @@ func (s *SQLite) SaveUpload(ctx context.Context, u Upload) (int64, error) {
 }
 
 func (s *SQLite) StartMigration(ctx context.Context, m Migration) (int64, error) {
+	sourceType := m.SourceType
+	if sourceType == "" {
+		sourceType = "zip"
+	}
+	destType := m.DestType
+	if destType == "" {
+		destType = "max"
+	}
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO migrations (user_id, upload_id, max_chat_id, max_chat_name,
-			filter_type, filter_months, total_messages, status, started_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?)`,
+			filter_type, filter_months, total_messages, status, started_at,
+			source_type, source_channel, dest_type)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?)`,
 		m.UserID, m.UploadID, m.MaxChatID, m.MaxChatName,
 		m.FilterType, m.FilterMonths, m.TotalMessages,
-		time.Now().UTC().Format(time.RFC3339))
+		time.Now().UTC().Format(time.RFC3339),
+		sourceType, m.SourceChannel, destType)
 	if err != nil {
 		return 0, fmt.Errorf("start migration for user %d: %w", m.UserID, err)
 	}
@@ -252,7 +274,8 @@ func (s *SQLite) ListMigrations(ctx context.Context, f MigrationFilter) ([]Migra
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, user_id, upload_id, max_chat_id, max_chat_name,
 			filter_type, filter_months, total_messages, sent_messages,
-			status, started_at, COALESCE(finished_at, ''), error_message, duration_seconds
+			status, started_at, COALESCE(finished_at, ''), error_message, duration_seconds,
+			COALESCE(source_type, 'zip'), COALESCE(source_channel, ''), COALESCE(dest_type, 'max')
 		FROM migrations
 		WHERE (? = '' OR status = ?) AND (? = 0 OR user_id = ?)
 		ORDER BY id DESC
@@ -269,7 +292,8 @@ func (s *SQLite) ListMigrations(ctx context.Context, f MigrationFilter) ([]Migra
 		var startedAt, finishedAt string
 		if err := rows.Scan(&m.ID, &m.UserID, &m.UploadID, &m.MaxChatID, &m.MaxChatName,
 			&m.FilterType, &m.FilterMonths, &m.TotalMessages, &m.SentMessages,
-			&m.Status, &startedAt, &finishedAt, &m.ErrorMessage, &m.DurationSeconds); err != nil {
+			&m.Status, &startedAt, &finishedAt, &m.ErrorMessage, &m.DurationSeconds,
+			&m.SourceType, &m.SourceChannel, &m.DestType); err != nil {
 			return nil, 0, fmt.Errorf("scan migration: %w", err)
 		}
 		if t, e := time.Parse(time.RFC3339, startedAt); e == nil {
@@ -289,11 +313,13 @@ func (s *SQLite) GetMigration(ctx context.Context, id int64) (*Migration, error)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, user_id, upload_id, max_chat_id, max_chat_name,
 			filter_type, filter_months, total_messages, sent_messages,
-			status, started_at, COALESCE(finished_at, ''), error_message, duration_seconds
+			status, started_at, COALESCE(finished_at, ''), error_message, duration_seconds,
+			COALESCE(source_type, 'zip'), COALESCE(source_channel, ''), COALESCE(dest_type, 'max')
 		FROM migrations WHERE id = ?`, id).
 		Scan(&m.ID, &m.UserID, &m.UploadID, &m.MaxChatID, &m.MaxChatName,
 			&m.FilterType, &m.FilterMonths, &m.TotalMessages, &m.SentMessages,
-			&m.Status, &startedAt, &finishedAt, &m.ErrorMessage, &m.DurationSeconds)
+			&m.Status, &startedAt, &finishedAt, &m.ErrorMessage, &m.DurationSeconds,
+			&m.SourceType, &m.SourceChannel, &m.DestType)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -403,7 +429,8 @@ func (s *SQLite) GetDailyStats(ctx context.Context, days int) ([]DailyStat, erro
 func (s *SQLite) GetRecentMigrations(ctx context.Context, limit int) ([]Migration, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, user_id, max_chat_name, total_messages, sent_messages,
-			status, started_at, duration_seconds
+			status, started_at, duration_seconds,
+			COALESCE(source_type, 'zip'), COALESCE(source_channel, ''), COALESCE(dest_type, 'max')
 		FROM migrations ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("get recent migrations: %w", err)
@@ -415,7 +442,8 @@ func (s *SQLite) GetRecentMigrations(ctx context.Context, limit int) ([]Migratio
 		var m Migration
 		var startedAt string
 		if err := rows.Scan(&m.ID, &m.UserID, &m.MaxChatName, &m.TotalMessages, &m.SentMessages,
-			&m.Status, &startedAt, &m.DurationSeconds); err != nil {
+			&m.Status, &startedAt, &m.DurationSeconds,
+			&m.SourceType, &m.SourceChannel, &m.DestType); err != nil {
 			return nil, fmt.Errorf("scan recent migration: %w", err)
 		}
 		if t, e := time.Parse(time.RFC3339, startedAt); e == nil {
@@ -424,6 +452,42 @@ func (s *SQLite) GetRecentMigrations(ctx context.Context, limit int) ([]Migratio
 		result = append(result, m)
 	}
 	return result, rows.Err()
+}
+
+func (s *SQLite) SaveUserbotSession(ctx context.Context, userID int64, data []byte) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO userbot_sessions (user_id, session_data, created_at, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+			session_data = excluded.session_data,
+			updated_at   = excluded.updated_at`,
+		userID, data, now, now)
+	if err != nil {
+		return fmt.Errorf("save userbot session for user %d: %w", userID, err)
+	}
+	return nil
+}
+
+func (s *SQLite) LoadUserbotSession(ctx context.Context, userID int64) ([]byte, error) {
+	var data []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT session_data FROM userbot_sessions WHERE user_id = ?`, userID).Scan(&data)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load userbot session for user %d: %w", userID, err)
+	}
+	return data, nil
+}
+
+func (s *SQLite) DeleteUserbotSession(ctx context.Context, userID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM userbot_sessions WHERE user_id = ?`, userID)
+	if err != nil {
+		return fmt.Errorf("delete userbot session for user %d: %w", userID, err)
+	}
+	return nil
 }
 
 func (s *SQLite) Close() error {

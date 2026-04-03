@@ -40,6 +40,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.handleHistory(ctx, msg)
 		case "stats":
 			b.handleStats(ctx, msg)
+		case "clone":
+			b.handleClone(msg)
 		case "cancel":
 			b.handleCancel(msg)
 		case "reset":
@@ -84,6 +86,13 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
+	// Non-document media in any state: polite rejection
+	if msg.Photo != nil || msg.Video != nil || msg.Audio != nil ||
+		msg.Voice != nil || msg.Sticker != nil || msg.VideoNote != nil {
+		b.reply(msg.Chat.ID, "Я принимаю только ZIP-архивы с экспортом Telegram Desktop.\nИли используй /clone для клонирования канала.")
+		return
+	}
+
 	// State-based text routing
 	sess := b.sessions.Get(msg.From.ID)
 	if sess != nil && msg.Text != "" {
@@ -104,7 +113,28 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		case StateAwaitingConfirm:
 			b.reply(msg.Chat.ID, "Нажми «Подтвердить перенос» или «Предпросмотр».")
 			return
+		// Clone flow states
+		case StateAwaitingPhone:
+			b.handlePhone(msg)
+			return
+		case StateAwaitingCode:
+			b.handleCode(msg)
+			return
+		case StateAwaitingPassword:
+			b.handlePassword(msg)
+			return
+		case StateAwaitingChannelSearch:
+			b.handleChannelSearch(msg)
+			return
+		case StateAwaitingCloneChat:
+			b.handleCloneChatSearch(msg)
+			return
 		}
+	}
+
+	// Fallback: unrecognized text with no active state
+	if msg.Text != "" {
+		b.reply(msg.Chat.ID, "Отправь ZIP-экспорт чтобы начать миграцию, или /clone для клонирования канала.\n/help — справка")
 	}
 }
 
@@ -136,6 +166,17 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 		b.handleSelectChat(chatID, userID, cb)
 	case strings.HasPrefix(cb.Data, "filter:"):
 		b.handleFilterCallback(chatID, userID, cb.Data)
+	// Clone flow callbacks
+	case strings.HasPrefix(cb.Data, "select_source:"):
+		b.handleSourceSelect(chatID, userID, cb)
+	case cb.Data == "dest_max" || cb.Data == "dest_tg":
+		b.handleDestChoice(chatID, userID, cb)
+	case strings.HasPrefix(cb.Data, "select_clone_chat:"):
+		b.handleCloneChatSelect(chatID, userID, cb)
+	case cb.Data == "confirm_clone":
+		b.startCloneMigration(ctx, chatID, userID)
+	case cb.Data == "cancel_clone":
+		b.cancelClone(chatID, userID)
 	}
 }
 
@@ -148,11 +189,11 @@ func (b *Bot) handleStart(msg *tgbotapi.Message) {
 		sess.mu.Lock()
 		state := sess.State
 		sess.mu.Unlock()
-		if state == StateMigrating {
+		switch state {
+		case StateMigrating, StateCloneMigrating:
 			b.replyWithKeyboard(msg.Chat.ID, "Миграция идёт. Используй кнопки ниже.", keyboardMigrating())
 			return
-		}
-		if state == StatePaused {
+		case StatePaused, StateClonePaused:
 			b.replyWithKeyboard(msg.Chat.ID, "Миграция на паузе. Используй кнопки ниже.", keyboardPaused())
 			return
 		}
@@ -163,13 +204,13 @@ func (b *Bot) handleStart(msg *tgbotapi.Message) {
 		sizeLimit = "2 ГБ"
 	}
 	text := "Привет! Я перенесу историю чата из Telegram в Max.\n\n" +
-		"Шаг 1: Экспортируй чат в Telegram Desktop\n" +
-		"  Чат → ⋯ → Export Chat History → Format: JSON\n" +
-		"  (ВАЖНО: выбери формат JSON, не HTML)\n" +
-		"  Включи нужные медиа (фото, видео, файлы)\n\n" +
-		"Шаг 2: Заархивируй полученную папку в ZIP\n\n" +
-		"Шаг 3: Отправь ZIP сюда\n\n" +
-		"Максимальный размер: " + sizeLimit
+		"📦 Способ 1 — ZIP-экспорт:\n" +
+		"  1. Экспортируй чат в Telegram Desktop (JSON)\n" +
+		"  2. Заархивируй в ZIP и отправь сюда\n" +
+		"  Макс. размер: " + sizeLimit + "\n\n" +
+		"📢 Способ 2 — Клон канала:\n" +
+		"  /clone — авторизуйся через свой TG-аккаунт\n" +
+		"  Бот сам прочитает канал и склонирует в Max или TG"
 
 	b.replyWithKeyboard(msg.Chat.ID, text, keyboardMain())
 }
@@ -192,6 +233,7 @@ func (b *Bot) handleHelp(msg *tgbotapi.Message) {
 Если миграция прервалась — отправь тот же ZIP повторно, прогресс сохранён.
 
 Команды:
+/clone — клонировать канал через аккаунт TG
 /setchat <id> — задать Max chat ID вручную
 /status — текущий статус
 /cancel — отменить/сбросить
@@ -229,6 +271,17 @@ func (b *Bot) showStatus(chatID int64, userID int64) {
 		StateAwaitingConfirm:    "👁 Жду подтверждение",
 		StateMigrating:          "🚀 Миграция идёт",
 		StatePaused:             "⏸ Миграция на паузе",
+		// Clone flow states
+		StateAwaitingPhone:         "📱 Жду ��омер телефона",
+		StateAwaitingCode:          "🔑 Жду код подтверждения",
+		StateAwaitingPassword:      "🔐 Жду пароль 2FA",
+		StateAwaitingChannelSearch: "🔍 Жду название канала",
+		StateAwaitingChannelSelect: "📋 Жду выбор канала",
+		StateAwaitingDestChoice:    "🎯 Жду выб��р назначения",
+		StateAwaitingCloneChat:     "🔍 Жду выбор чата Max",
+		StateAwaitingCloneConfirm:  "👁 Жду подтверждение клонирования",
+		StateCloneMigrating:        "🚀 Клонирование идёт",
+		StateClonePaused:           "⏸ Клонирование на паузе",
 	}
 
 	var sb strings.Builder
@@ -270,11 +323,12 @@ func (b *Bot) cancelMigration(chatID int64, userID int64) {
 	sess.mu.Lock()
 	state := sess.State
 
-	if (state == StateMigrating || state == StatePaused) && sess.Cancel != nil {
+	if (state == StateMigrating || state == StatePaused ||
+		state == StateCloneMigrating || state == StateClonePaused) && sess.Cancel != nil {
 		pauseCh := sess.PauseCh
 		sess.Cancel()
 		// If paused, unblock the migration goroutine so it can observe context cancellation
-		if state == StatePaused && pauseCh != nil {
+		if (state == StatePaused || state == StateClonePaused) && pauseCh != nil {
 			select {
 			case pauseCh <- struct{}{}:
 			default:
@@ -287,11 +341,24 @@ func (b *Bot) cancelMigration(chatID int64, userID int64) {
 
 	// Cancel from any non-idle state resets to idle
 	if state != StateIdle {
+		// Cleanup MTProto client if we're in a clone flow state
+		if state >= StateAwaitingPhone && state <= StateAwaitingCloneConfirm {
+			if sess.TGRunCancel != nil {
+				sess.TGRunCancel()
+				sess.TGRunCancel = nil
+			}
+			if sess.TGAuth != nil {
+				sess.TGAuth.Cancel()
+			}
+			sess.TGClient = nil
+			sess.TGAuth = nil
+			sess.SourceChannel = nil
+		}
 		sess.State = StateIdle
 		sess.MaxChatID = 0
 		sess.MaxChatName = ""
 		sess.mu.Unlock()
-		b.replyWithKeyboard(chatID, "Отменено. Отправь ZIP чтобы начать заново.", keyboardMain())
+		b.replyWithKeyboard(chatID, "Отменено.", keyboardMain())
 		return
 	}
 
@@ -308,15 +375,20 @@ func (b *Bot) handleReset(msg *tgbotapi.Message) {
 
 	sess.mu.Lock()
 	state := sess.State
-	if (state == StateMigrating || state == StatePaused) && sess.Cancel != nil {
+	if (state == StateMigrating || state == StatePaused ||
+		state == StateCloneMigrating || state == StateClonePaused) && sess.Cancel != nil {
 		pauseCh := sess.PauseCh
 		sess.Cancel()
-		if state == StatePaused && pauseCh != nil {
+		if (state == StatePaused || state == StateClonePaused) && pauseCh != nil {
 			select {
 			case pauseCh <- struct{}{}:
 			default:
 			}
 		}
+	}
+	// Cleanup MTProto client if active
+	if sess.TGRunCancel != nil {
+		sess.TGRunCancel()
 	}
 	sess.mu.Unlock()
 

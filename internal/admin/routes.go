@@ -5,6 +5,9 @@ import "net/http"
 func (s *Server) setupRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
 
+	// Health check (no auth — used by Docker healthcheck / load balancers)
+	mux.HandleFunc("GET /health", s.handleHealth)
+
 	// Public
 	mux.HandleFunc("GET /admin/login", s.handleLoginPage)
 	mux.HandleFunc("POST /admin/login", s.handleLoginSubmit)

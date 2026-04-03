@@ -368,12 +368,16 @@ func (b *Bot) pauseMigration(chatID int64, userID int64) {
 		return
 	}
 	sess.mu.Lock()
-	if sess.State != StateMigrating {
+	if sess.State != StateMigrating && sess.State != StateCloneMigrating {
 		sess.mu.Unlock()
 		b.reply(chatID, "Нет активной миграции.")
 		return
 	}
-	sess.State = StatePaused
+	if sess.State == StateCloneMigrating {
+		sess.State = StateClonePaused
+	} else {
+		sess.State = StatePaused
+	}
 	pauseCh := sess.PauseCh
 	sess.mu.Unlock()
 	if pauseCh != nil {
@@ -391,12 +395,16 @@ func (b *Bot) resumeMigration(chatID int64, userID int64) {
 		return
 	}
 	sess.mu.Lock()
-	if sess.State != StatePaused {
+	if sess.State != StatePaused && sess.State != StateClonePaused {
 		sess.mu.Unlock()
 		b.reply(chatID, "Миграция не на паузе.")
 		return
 	}
-	sess.State = StateMigrating
+	if sess.State == StateClonePaused {
+		sess.State = StateCloneMigrating
+	} else {
+		sess.State = StateMigrating
+	}
 	pauseCh := sess.PauseCh
 	sess.mu.Unlock()
 	if pauseCh != nil {

@@ -1,8 +1,10 @@
 # tg2max
 
-Утилита для переноса истории чатов из Telegram в мессенджер [Max](https://max.ru).
+Утилита для переноса истории чатов из Telegram в мессенджер [Max](https://max.ru) и обратно.
 
-Читает JSON-экспорт из Telegram Desktop, конвертирует сообщения (текст, медиа, форматирование) и отправляет в указанный чат Max через Bot API.
+Два способа миграции:
+- **ZIP-экспорт**: загрузить JSON-экспорт из Telegram Desktop — бот мигрирует в Max
+- **Clone канала**: авторизоваться через свой TG-аккаунт — бот сам прочитает канал и склонирует в Max или новый TG-канал
 
 ## Что переносится
 
@@ -27,13 +29,18 @@
 - Уведомление при завершении длительных миграций
 - Дедупликация повторных ZIP-загрузок (SHA-256)
 - Авторизация по Telegram user ID
+- **Clone**: авторизация через MTProto, поиск каналов, скачивание медиа
+- **Clone**: автоматический реюз сохранённых сессий (AES-256-GCM шифрование)
+- **Clone**: создание новых TG-каналов для клонирования
+- **Admin panel**: веб-панель с SSE live updates, графиками, фильтрами
 
-## Два режима работы
+## Три режима работы
 
 | Режим | Бинарник | Описание |
 |-------|----------|----------|
 | **CLI** | `tg2max` | Пакетная миграция по конфигу. Указываешь маппинги (экспорт -> чат) в YAML, запускаешь один раз. |
-| **Telegram-бот** | `tg2max-bot` | Интерактивный. Пишешь боту в Telegram, отправляешь ZIP-архив экспорта, выбираешь чат -- бот мигрирует. |
+| **Telegram-бот** | `tg2max-bot` | Интерактивный. Пишешь боту в Telegram, отправляешь ZIP-архив или используешь /clone. |
+| **Admin panel** | (встроен в `tg2max-bot`) | Веб-панель мониторинга: статистика, активные миграции, графики. |
 
 ## Quick Start (бот)
 
@@ -45,14 +52,27 @@ TELEGRAM_API_HASH=your_api_hash
 TELEGRAM_TOKEN=your_telegram_bot_token
 MAX_TOKEN=your_max_bot_token
 ALLOWED_USER_IDS=123456789
+ADMIN_ENABLED=true
+ADMIN_PASSWORD=your_admin_password
+DB_PATH=/tmp/tg2max/tg2max.db
 ```
 
 - **Max-бот**: создать через `@MasterBot` в Max
 - **TG-бот**: создать через [@BotFather](https://t.me/BotFather)
-- **API ID/Hash**: получить на [my.telegram.org](https://my.telegram.org) (для файлов >20 МБ)
+- **API ID/Hash**: получить на [my.telegram.org](https://my.telegram.org) (для Local Bot API и clone flow)
 - **ALLOWED_USER_IDS**: через запятую, пустое = открыт для всех
 
-### 2. Запустить
+### 2. Для clone flow (опционально)
+
+```bash
+# Те же API ID/Hash что и выше
+TG_APP_ID=your_api_id
+TG_APP_HASH=your_api_hash
+# AES-ключ для шифрования MTProto сессий (openssl rand -hex 32)
+USERBOT_SESSION_KEY=your_64_char_hex_key
+```
+
+### 3. Запустить
 
 ```bash
 docker compose up -d
@@ -60,38 +80,42 @@ docker compose up -d
 
 Поднимает:
 - `tg-bot-api` -- Local Bot API (файлы до 2 ГБ)
-- `tg2max-bot` -- Telegram-бот
+- `tg2max-bot` -- Telegram-бот + admin panel на `:8080`
 
-### 3. Использование
+### 4. Использование
 
+#### ZIP-экспорт
 1. `/start` -- бот приветствует и объясняет шаги
-2. Отправить ZIP-архив экспорта (до 512 МБ)
-3. Бот показывает статистику экспорта и ищет чат в Max по названию
-4. Выбрать фильтр (всё / текст / медиа / за N месяцев)
-5. Предпросмотр с dry-run аналитикой
-6. Подтвердить -- миграция запускается
+2. Экспортировать чат в Telegram Desktop (JSON формат + медиа)
+3. Отправить ZIP-архив боту
+4. Выбрать чат Max, фильтры, подтвердить
 
-Команды: `/help`, `/status`, `/cancel`, `/reset`, `/setchat <id>`
+#### Clone канала
+1. `/clone` -- начать клонирование
+2. Ввести номер телефона, код подтверждения (бот удаляет чувствительные сообщения)
+3. Ввести название канала для поиска
+4. Выбрать назначение: Max или новый TG-канал
+5. Подтвердить -- бот читает историю, скачивает медиа, переносит
+
+#### Admin panel
+- Открыть `http://localhost:8080/admin/`
+- Дашборд: статистика, активная миграция (live), графики за 30 дней
+- Миграции: постраничный список с фильтрами, бейджи Clone/ZIP
+- Пользователи: список с историей
+
+Команды: `/help`, `/status`, `/cancel`, `/reset`, `/clone`, `/setchat <id>`, `/history`, `/stats`
 
 ## CLI режим
 
 ```bash
+cp configs/config.example.yaml config.yaml
+# Отредактировать config.yaml
 ./bin/tg2max --config config.yaml [--dry-run] [--verbose]
-```
-
-```yaml
-max_token: "your-max-bot-token"
-rate_limit_rps: 1
-cursor_file: "cursor.json"
-mappings:
-  - name: "Dev Chat"
-    tg_export_path: "/path/to/export/result.json"
-    max_chat_id: 123456789
 ```
 
 ## Конфигурация
 
-Все параметры задаются через `.env` (приоритет) или `config.yaml`.
+Все параметры задаются через `.env` (приоритет) или `config.yaml`. Пример: `configs/config.example.yaml`.
 
 | Параметр | Env | Описание | Default |
 |----------|-----|----------|---------|
@@ -100,45 +124,47 @@ mappings:
 | `rate_limit_rps` | -- | Запросов в секунду к Max API | 1 |
 | `tg_api_endpoint` | `TG_API_ENDPOINT` | URL Local Bot API | -- |
 | `tg_api_files_dir` | `TG_API_FILES_DIR` | Volume Local Bot API | -- |
-| `allowed_user_ids` | `ALLOWED_USER_IDS` | Разрешённые TG user ID (через запятую) | все |
-| `temp_dir` | -- | Директория для распаковки | /tmp |
+| `allowed_user_ids` | `ALLOWED_USER_IDS` | Разрешённые TG user ID | все |
+| `admin_user_ids` | `ADMIN_USER_IDS` | Админы для /stats | allowed |
+| `db_path` | `DB_PATH` | Путь к SQLite БД | -- |
+| `admin_enabled` | `ADMIN_ENABLED` | Включить веб-панель | false |
+| `admin_addr` | `ADMIN_ADDR` | Адрес админки | :8080 |
+| `admin_password` | `ADMIN_PASSWORD` | Пароль админки | -- |
+| `tg_app_id` | `TG_APP_ID` | Telegram API ID (для clone) | -- |
+| `tg_app_hash` | `TG_APP_HASH` | Telegram API Hash (для clone) | -- |
+| -- | `USERBOT_SESSION_KEY` | AES-256 ключ (hex, 64 символа) | -- |
+| -- | `ADMIN_SECURE_COOKIE` | Secure flag на cookie | true |
 
 ## Архитектура
 
 ```
 cmd/tg2max/         -- CLI: пакетная миграция
-cmd/tg2max-bot/     -- Telegram-бот: интерактивная миграция
+cmd/tg2max-bot/     -- Telegram-бот: интерактивная миграция + admin panel
 cmd/maxclean/       -- Утилита очистки чата Max
-internal/bot/       -- Логика бота + FSM
+internal/admin/     -- Web admin UI (HTMX + Tailwind, SSE live updates, Chart.js)
+internal/bot/       -- Логика бота: FSM, handlers, clone flow, keyboards
 internal/config/    -- Загрузка и валидация конфига
 internal/converter/ -- Форматирование сообщений (reply-chains, группировка, timezone)
 internal/export/    -- ZIP-распаковка + анализ экспорта
 internal/maxbot/    -- Клиент Max Bot API (retry, rate limit, fallback)
 internal/migrator/  -- Движок миграции + cursor + dry-run + фильтрация
+internal/storage/   -- SQLite persistence (WAL mode, schema v2)
 internal/telegram/  -- Парсинг JSON-экспорта (polls, contacts, locations)
+internal/tgclient/  -- MTProto клиент (gotd/td): auth, channels, media download
+internal/tgsender/  -- Отправка в TG каналы через MTProto (migrator.Sender)
 pkg/models/         -- Доменные модели
 ```
 
 ### FSM бота
 
 ```
-Idle -> AwaitingChatSearch -> AwaitingFilter -> AwaitingConfirm -> Migrating
-                                                                      ↕
-                                                                   Paused
-```
+ZIP flow:
+  Idle -> AwaitingChatSearch -> AwaitingFilter -> AwaitingConfirm -> Migrating <-> Paused
 
-## Тестовое покрытие
-
-| Пакет | Покрытие |
-|-------|----------|
-| config | 97% |
-| converter | 94% |
-| export | 89% |
-| migrator | 83% |
-| telegram | 95% |
-
-```bash
-make test
+Clone flow:
+  Idle -> AwaitingPhone -> AwaitingCode -> [AwaitingPassword] -> AwaitingChannelSearch
+       -> AwaitingChannelSelect -> AwaitingDestChoice -> [AwaitingCloneChat]
+       -> AwaitingCloneConfirm -> CloneMigrating <-> ClonePaused
 ```
 
 ## Безопасность
@@ -146,12 +172,17 @@ make test
 - Авторизация по allowlist (ALLOWED_USER_IDS)
 - Path traversal защита в ZIP-распаковке и медиа-путях
 - Zip bomb защита (100K файлов, 2 GiB/файл, 5 GiB total)
-- Лимит размера загрузки (512 МБ)
+- Лимит размера загрузки (512 МБ стандарт / 2 ГБ Local Bot API)
 - Non-root контейнеры
 - Local Bot API на localhost only
 - Секреты только в `.env` (в .gitignore)
-- Sanitized error messages (без системных путей)
-- Session TTL (24h автоочистка)
+- MTProto сессии зашифрованы AES-256-GCM в SQLite
+- Сообщения с кодом и паролем 2FA автоматически удаляются
+- Admin: rate limiting (5 попыток/блок 15 мин), CSRF protection, Secure cookie
+- Docker healthcheck (`/health` endpoint)
+- Data race protection (sync.Mutex на shared state)
+- Goroutine leak prevention (defer recover в MTProto горутинах)
+- Clone: лимит 50K сообщений, 500 каналов (OOM prevention)
 
 ## Makefile
 

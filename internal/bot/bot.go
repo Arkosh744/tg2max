@@ -2,9 +2,11 @@ package bot
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -25,8 +27,14 @@ type Bot struct {
 	allowedUserIDs map[int64]struct{}
 	adminUserIDs   map[int64]struct{}
 	waitingUsers   []int64 // users waiting for busy lock to clear
+	waitingMu      sync.Mutex
 	log            *slog.Logger
 	startedAt      time.Time
+
+	// Clone flow (MTProto userbot)
+	tgAppID           int
+	tgAppHash         string
+	userbotSessionKey []byte // 32 bytes for AES-256-GCM encryption of MTProto sessions
 }
 
 type Config struct {
@@ -39,6 +47,11 @@ type Config struct {
 	AllowedUserIDs []int64 // if empty, open to everyone (NOT recommended for production)
 	AdminUserIDs   []int64 // users with access to /stats; defaults to AllowedUserIDs
 	DBPath         string  // path to SQLite database; empty = no persistent storage
+
+	// Clone flow (MTProto userbot) — optional, enables /clone command
+	TGAppID           int    // Telegram API app_id from my.telegram.org
+	TGAppHash         string // Telegram API app_hash from my.telegram.org
+	UserbotSessionKey string // hex-encoded 32-byte AES key for encrypting stored MTProto sessions
 }
 
 func New(cfg Config, log *slog.Logger) (*Bot, error) {
@@ -94,20 +107,41 @@ func New(cfg Config, log *slog.Logger) (*Bot, error) {
 		store = storage.Nop{}
 	}
 
-	return &Bot{
-		api:            api,
-		sessions:       NewSessionStore(),
-		storage:        store,
-		maxToken:       cfg.MaxToken,
-		rps:            cfg.RateLimitRPS,
-		tempDir:        cfg.TempDir,
-		tgAPIEndpoint:  cfg.TGAPIEndpoint,
-		tgAPIFilesDir:  cfg.TGAPIFilesDir,
-		allowedUserIDs: allowed,
-		adminUserIDs:   admins,
-		log:            log,
-		startedAt:      time.Now(),
-	}, nil
+	var sessionKey []byte
+	if cfg.UserbotSessionKey != "" {
+		var err2 error
+		sessionKey, err2 = hex.DecodeString(cfg.UserbotSessionKey)
+		if err2 != nil {
+			return nil, fmt.Errorf("decode userbot_session_key: %w", err2)
+		}
+		if len(sessionKey) != 32 {
+			return nil, fmt.Errorf("userbot_session_key must be 32 bytes (64 hex chars), got %d bytes", len(sessionKey))
+		}
+	}
+
+	b := &Bot{
+		api:               api,
+		sessions:          NewSessionStore(),
+		storage:           store,
+		maxToken:          cfg.MaxToken,
+		rps:               cfg.RateLimitRPS,
+		tempDir:           cfg.TempDir,
+		tgAPIEndpoint:     cfg.TGAPIEndpoint,
+		tgAPIFilesDir:     cfg.TGAPIFilesDir,
+		allowedUserIDs:    allowed,
+		adminUserIDs:      admins,
+		log:               log,
+		startedAt:         time.Now(),
+		tgAppID:           cfg.TGAppID,
+		tgAppHash:         cfg.TGAppHash,
+		userbotSessionKey: sessionKey,
+	}
+
+	if cfg.TGAppID != 0 && cfg.TGAppHash != "" {
+		log.Info("clone feature enabled (MTProto userbot)")
+	}
+
+	return b, nil
 }
 
 // Close releases resources held by the bot (database connection, etc.).
@@ -214,6 +248,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		tgbotapi.BotCommand{Command: "cancel", Description: "Отменить миграцию"},
 		tgbotapi.BotCommand{Command: "reset", Description: "Сбросить сессию"},
 		tgbotapi.BotCommand{Command: "stats", Description: "Статистика (админ)"},
+		tgbotapi.BotCommand{Command: "clone", Description: "Клонировать канал через аккаунт"},
 	)
 	b.api.Request(commands)
 

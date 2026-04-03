@@ -35,6 +35,7 @@
             {{end}}
 
             <form method="POST" action="/admin/login" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <div>
                     <label for="password" class="block text-sm font-medium text-slate-300 mb-1.5">
                         Пароль

@@ -19,4 +19,7 @@ func (Nop) ListUsers(context.Context, int, int) ([]UserRow, int, error)         
 func (Nop) GetUser(context.Context, int64) (*User, error)                              { return nil, nil }
 func (Nop) GetDailyStats(context.Context, int) ([]DailyStat, error)                    { return nil, nil }
 func (Nop) GetRecentMigrations(context.Context, int) ([]Migration, error)              { return nil, nil }
+func (Nop) SaveUserbotSession(context.Context, int64, []byte) error                    { return nil }
+func (Nop) LoadUserbotSession(context.Context, int64) ([]byte, error)                  { return nil, nil }
+func (Nop) DeleteUserbotSession(context.Context, int64) error                          { return nil }
 func (Nop) Close() error                                                               { return nil }

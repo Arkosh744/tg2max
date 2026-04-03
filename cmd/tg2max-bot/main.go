@@ -3,16 +3,18 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"crypto/rand"
 	"encoding/hex"
-	"net/http"
 
 	"github.com/arkosh/tg2max/internal/admin"
 	"github.com/arkosh/tg2max/internal/bot"
@@ -33,6 +35,11 @@ type Config struct {
 	AdminAddr      string  `yaml:"admin_addr"`
 	AdminPassword  string  `yaml:"admin_password"`
 	AdminSecret    string  `yaml:"admin_secret"`
+
+	// Clone flow (MTProto userbot)
+	TGAppID           int    `yaml:"tg_app_id"`
+	TGAppHash         string `yaml:"tg_app_hash"`
+	UserbotSessionKey string `yaml:"userbot_session_key"`
 }
 
 func main() {
@@ -49,15 +56,18 @@ func main() {
 	cfg := loadConfig(*configPath, log)
 
 	b, err := bot.New(bot.Config{
-		TelegramToken:  cfg.TelegramToken,
-		MaxToken:       cfg.MaxToken,
-		RateLimitRPS:   cfg.RateLimitRPS,
-		TempDir:        cfg.TempDir,
-		TGAPIEndpoint:  cfg.TGAPIEndpoint,
-		TGAPIFilesDir:  cfg.TGAPIFilesDir,
-		AllowedUserIDs: cfg.AllowedUserIDs,
-		AdminUserIDs:   cfg.AdminUserIDs,
-		DBPath:         cfg.DBPath,
+		TelegramToken:     cfg.TelegramToken,
+		MaxToken:          cfg.MaxToken,
+		RateLimitRPS:      cfg.RateLimitRPS,
+		TempDir:           cfg.TempDir,
+		TGAPIEndpoint:     cfg.TGAPIEndpoint,
+		TGAPIFilesDir:     cfg.TGAPIFilesDir,
+		AllowedUserIDs:    cfg.AllowedUserIDs,
+		AdminUserIDs:      cfg.AdminUserIDs,
+		DBPath:            cfg.DBPath,
+		TGAppID:           cfg.TGAppID,
+		TGAppHash:         cfg.TGAppHash,
+		UserbotSessionKey: cfg.UserbotSessionKey,
 	}, log)
 	if err != nil {
 		log.Error("failed to create bot", "error", err)
@@ -100,6 +110,27 @@ func main() {
 				log.Error("admin server error", "error", err)
 			}
 		}()
+	}
+
+	// Standalone health endpoint when admin panel is disabled
+	if !cfg.AdminEnabled {
+		healthAddr := ":8081"
+		if v := os.Getenv("HEALTH_ADDR"); v != "" {
+			healthAddr = v
+		}
+		healthMux := http.NewServeMux()
+		healthMux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"status":"ok","uptime":"%s"}`, b.Uptime().Round(time.Second))
+		})
+		go func() {
+			srv := &http.Server{Addr: healthAddr, Handler: healthMux}
+			go func() { <-ctx.Done(); srv.Close() }()
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Error("health server error", "error", err)
+			}
+		}()
+		log.Info("health endpoint started", "addr", healthAddr)
 	}
 
 	if err := b.Run(ctx); err != nil {
@@ -166,6 +197,19 @@ func loadConfig(path string, log *slog.Logger) Config {
 				cfg.AdminUserIDs = append(cfg.AdminUserIDs, id)
 			}
 		}
+	}
+
+	// Clone flow env vars
+	if v := os.Getenv("TG_APP_ID"); v != "" {
+		if id, err := strconv.Atoi(v); err == nil {
+			cfg.TGAppID = id
+		}
+	}
+	if v := os.Getenv("TG_APP_HASH"); v != "" {
+		cfg.TGAppHash = v
+	}
+	if v := os.Getenv("USERBOT_SESSION_KEY"); v != "" {
+		cfg.UserbotSessionKey = v
 	}
 
 	if cfg.TelegramToken == "" {

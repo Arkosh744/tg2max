@@ -98,6 +98,38 @@ func (m *Migrator) MigrateAll(ctx context.Context, mappings []models.ChatMapping
 	return stats, m.cursor.Save()
 }
 
+// MigrateMessages migrates pre-loaded messages to the destination chat.
+// This is used by the clone flow where messages come from MTProto API instead of a JSON file.
+func (m *Migrator) MigrateMessages(ctx context.Context, chatID int64, chatName string,
+	messages []models.Message, filterType string, filterMonths int) (Stats, error) {
+
+	defer func() {
+		if err := m.sender.Close(); err != nil {
+			m.log.Warn("failed to close sender", "error", err)
+		}
+	}()
+
+	start := time.Now()
+	if err := m.cursor.Load(); err != nil {
+		m.log.Warn("failed to load cursor, starting from scratch", "error", err)
+	}
+
+	mapping := models.ChatMapping{
+		Name:         chatName,
+		MaxChatID:    chatID,
+		FilterType:   filterType,
+		FilterMonths: filterMonths,
+	}
+
+	stats, err := m.migrateMessages(ctx, mapping, messages)
+	stats.Duration = time.Since(start)
+
+	if saveErr := m.cursor.Save(); saveErr != nil {
+		m.log.Error("failed to save cursor", "error", saveErr)
+	}
+	return stats, err
+}
+
 func (m *Migrator) migrate(ctx context.Context, mapping models.ChatMapping) (Stats, error) {
 	stats := Stats{AuthorCounts: make(map[string]int)}
 	reader := telegram.NewReader(mapping.TGExportPath)
@@ -116,6 +148,12 @@ func (m *Migrator) migrate(ctx context.Context, mapping models.ChatMapping) (Sta
 	}
 
 	messages := result.Messages
+	return m.migrateMessages(ctx, mapping, messages)
+}
+
+// migrateMessages is the core migration logic shared between file-based and direct message flows.
+func (m *Migrator) migrateMessages(ctx context.Context, mapping models.ChatMapping, messages []models.Message) (Stats, error) {
+	stats := Stats{AuthorCounts: make(map[string]int)}
 	total := len(messages)
 	lastID := m.cursor.GetLastMessageID(mapping.Name)
 	sent := 0

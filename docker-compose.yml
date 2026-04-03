@@ -38,6 +38,12 @@ services:
       ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
     ports:
       - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     volumes:
       - /tmp/tg2max:/tmp/tg2max
       - /home/arkosh/.local/share/tg2max-bot-api:/tg-files:ro

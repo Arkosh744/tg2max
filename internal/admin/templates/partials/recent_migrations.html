@@ -5,6 +5,7 @@
             <thead>
                 <tr class="border-b border-slate-700">
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">ID</th>
+                    <th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">Тип</th>
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">Пользователь</th>
                     <th class="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">Статус</th>
                     <th class="px-4 py-3 text-right text-xs font-semibold text-slate-400 uppercase tracking-wider">Сообщений</th>
@@ -16,8 +17,15 @@
                 <tr class="hover:bg-slate-750 transition-colors">
                     <td class="px-4 py-3 text-slate-400 font-mono text-xs">{{.ID}}</td>
                     <td class="px-4 py-3">
-                        <div class="text-white font-medium">{{.Username}}</div>
-                        <div class="text-slate-500 text-xs">{{.TelegramID}}</div>
+                        {{if eq .SourceType "clone"}}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-900/50 text-purple-300">Clone</span>
+                        {{else}}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-900/50 text-blue-300">ZIP</span>
+                        {{end}}
+                    </td>
+                    <td class="px-4 py-3">
+                        <div class="text-white font-medium">{{.MaxChatName}}</div>
+                        {{if .SourceChannel}}<div class="text-slate-500 text-xs">из: {{.SourceChannel}}</div>{{end}}
                     </td>
                     <td class="px-4 py-3">
                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {{statusBadge .Status}}">
@@ -31,7 +39,7 @@
                 </tr>
                 {{else}}
                 <tr>
-                    <td colspan="5" class="px-4 py-8 text-center text-slate-500 text-sm">
+                    <td colspan="6" class="px-4 py-8 text-center text-slate-500 text-sm">
                         Миграций пока нет
                     </td>
                 </tr>

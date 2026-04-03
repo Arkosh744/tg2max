@@ -43,6 +43,9 @@ type Migration struct {
 	FinishedAt      *time.Time
 	ErrorMessage    string
 	DurationSeconds int
+	SourceType      string // "zip" or "clone"
+	SourceChannel   string // source TG channel name (clone only)
+	DestType        string // "max" or "tg"
 }
 
 // UserStats holds aggregate statistics for admin reporting.
@@ -134,6 +137,16 @@ type Storage interface {
 
 	// GetDailyStats returns migration counts and message totals per day for the last N days.
 	GetDailyStats(ctx context.Context, days int) ([]DailyStat, error)
+
+	// SaveUserbotSession stores encrypted MTProto session data for a user.
+	SaveUserbotSession(ctx context.Context, userID int64, data []byte) error
+
+	// LoadUserbotSession loads encrypted MTProto session data for a user.
+	// Returns nil, nil if no session exists.
+	LoadUserbotSession(ctx context.Context, userID int64) ([]byte, error)
+
+	// DeleteUserbotSession removes the stored MTProto session for a user.
+	DeleteUserbotSession(ctx context.Context, userID int64) error
 
 	// Close closes the storage connection.
 	Close() error
