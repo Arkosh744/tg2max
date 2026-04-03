@@ -33,15 +33,15 @@
                     </a>
                     <div class="hidden md:flex items-center space-x-1">
                         <a href="/admin/"
-                           class="px-3 py-2 rounded-md text-sm font-medium transition-colors {{if eq .ActiveNav "dashboard"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
+                           class="px-3 py-2 rounded-md text-sm font-medium transition-colors {{if eq .Active "dashboard"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
                             Дашборд
                         </a>
                         <a href="/admin/migrations"
-                           class="px-3 py-2 rounded-md text-sm font-medium transition-colors {{if eq .ActiveNav "migrations"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
+                           class="px-3 py-2 rounded-md text-sm font-medium transition-colors {{if eq .Active "migrations"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
                             Миграции
                         </a>
                         <a href="/admin/users"
-                           class="px-3 py-2 rounded-md text-sm font-medium transition-colors {{if eq .ActiveNav "users"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
+                           class="px-3 py-2 rounded-md text-sm font-medium transition-colors {{if eq .Active "users"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
                             Пользователи
                         </a>
                     </div>
@@ -60,15 +60,15 @@
         <div class="md:hidden border-t border-slate-700">
             <div class="px-2 pt-2 pb-3 space-y-1">
                 <a href="/admin/"
-                   class="block px-3 py-2 rounded-md text-sm font-medium {{if eq .ActiveNav "dashboard"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
+                   class="block px-3 py-2 rounded-md text-sm font-medium {{if eq .Active "dashboard"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
                     Дашборд
                 </a>
                 <a href="/admin/migrations"
-                   class="block px-3 py-2 rounded-md text-sm font-medium {{if eq .ActiveNav "migrations"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
+                   class="block px-3 py-2 rounded-md text-sm font-medium {{if eq .Active "migrations"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
                     Миграции
                 </a>
                 <a href="/admin/users"
-                   class="block px-3 py-2 rounded-md text-sm font-medium {{if eq .ActiveNav "users"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
+                   class="block px-3 py-2 rounded-md text-sm font-medium {{if eq .Active "users"}}bg-slate-700 text-white{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
                     Пользователи
                 </a>
             </div>

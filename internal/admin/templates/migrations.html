@@ -15,7 +15,7 @@
            hx-target="#migrations-table"
            hx-push-url="true"
            class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
-                  {{if eq .StatusFilter ""}}bg-blue-600 text-white{{else}}bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700{{end}}">
+                  {{if eq .Status ""}}bg-blue-600 text-white{{else}}bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700{{end}}">
             Все
         </a>
         <a href="/admin/migrations?status=completed"
@@ -23,7 +23,7 @@
            hx-target="#migrations-table"
            hx-push-url="true"
            class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
-                  {{if eq .StatusFilter "completed"}}bg-green-600 text-white{{else}}bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700{{end}}">
+                  {{if eq .Status "completed"}}bg-green-600 text-white{{else}}bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700{{end}}">
             Завершённые
         </a>
         <a href="/admin/migrations?status=failed"
@@ -31,7 +31,7 @@
            hx-target="#migrations-table"
            hx-push-url="true"
            class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
-                  {{if eq .StatusFilter "failed"}}bg-red-600 text-white{{else}}bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700{{end}}">
+                  {{if eq .Status "failed"}}bg-red-600 text-white{{else}}bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700{{end}}">
             Ошибки
         </a>
         <a href="/admin/migrations?status=cancelled"
@@ -39,7 +39,7 @@
            hx-target="#migrations-table"
            hx-push-url="true"
            class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
-                  {{if eq .StatusFilter "cancelled"}}bg-yellow-600 text-white{{else}}bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700{{end}}">
+                  {{if eq .Status "cancelled"}}bg-yellow-600 text-white{{else}}bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700{{end}}">
             Отменённые
         </a>
         <a href="/admin/migrations?status=started"
@@ -47,7 +47,7 @@
            hx-target="#migrations-table"
            hx-push-url="true"
            class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
-                  {{if eq .StatusFilter "started"}}bg-blue-500 text-white{{else}}bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700{{end}}">
+                  {{if eq .Status "started"}}bg-blue-500 text-white{{else}}bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700{{end}}">
             В процессе
         </a>
     </div>
@@ -81,8 +81,7 @@
                                 {{end}}
                             </td>
                             <td class="px-4 py-3">
-                                <div class="text-white font-medium">{{.Username}}</div>
-                                <div class="text-slate-400 text-xs">{{.TelegramID}}</div>
+                                <div class="text-slate-300 font-mono text-xs">{{.UserID}}</div>
                             </td>
                             <td class="px-4 py-3 text-slate-300">
                                 {{if .SourceChannel}}
@@ -99,7 +98,7 @@
                                 {{.SentMessages}}<span class="text-slate-500">/{{.TotalMessages}}</span>
                             </td>
                             <td class="px-4 py-3 text-right text-slate-400 text-xs">{{formatDuration .DurationSeconds}}</td>
-                            <td class="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">{{formatTime .CreatedAt}}</td>
+                            <td class="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">{{formatTime .StartedAt}}</td>
                         </tr>
                         {{else}}
                         <tr>
@@ -121,8 +120,8 @@
             </p>
             <div class="flex items-center space-x-2">
                 {{if gt .Page 1}}
-                <a href="/admin/migrations?page={{sub .Page 1}}&status={{.StatusFilter}}"
-                   hx-get="/admin/migrations?page={{sub .Page 1}}&status={{.StatusFilter}}"
+                <a href="/admin/migrations?page={{sub .Page 1}}&status={{.Status}}"
+                   hx-get="/admin/migrations?page={{sub .Page 1}}&status={{.Status}}"
                    hx-target="#migrations-table"
                    hx-push-url="true"
                    class="px-3 py-1.5 rounded-lg text-sm bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700 transition-colors">
@@ -130,8 +129,8 @@
                 </a>
                 {{end}}
                 {{if lt .Page .TotalPages}}
-                <a href="/admin/migrations?page={{add .Page 1}}&status={{.StatusFilter}}"
-                   hx-get="/admin/migrations?page={{add .Page 1}}&status={{.StatusFilter}}"
+                <a href="/admin/migrations?page={{add .Page 1}}&status={{.Status}}"
+                   hx-get="/admin/migrations?page={{add .Page 1}}&status={{.Status}}"
                    hx-target="#migrations-table"
                    hx-push-url="true"
                    class="px-3 py-1.5 rounded-lg text-sm bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700 transition-colors">
