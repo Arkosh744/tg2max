@@ -64,6 +64,15 @@ var migrations = []string{
 	ALTER TABLE migrations ADD COLUMN source_type TEXT NOT NULL DEFAULT 'zip';
 	ALTER TABLE migrations ADD COLUMN source_channel TEXT NOT NULL DEFAULT '';
 	ALTER TABLE migrations ADD COLUMN dest_type TEXT NOT NULL DEFAULT 'max';`,
+
+	// v3: feedback table
+	`CREATE TABLE IF NOT EXISTS feedback (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL REFERENCES users(telegram_id),
+		text       TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		resolved   INTEGER NOT NULL DEFAULT 0
+	);`,
 }
 
 // SQLite implements Storage using a local SQLite database.
@@ -78,6 +87,9 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		return nil, fmt.Errorf("open sqlite %s: %w", dbPath, err)
 	}
 	db.SetMaxOpenConns(1)
+
+	// WAL auto-checkpoint every 1000 pages (~4 MB)
+	db.Exec("PRAGMA wal_autocheckpoint=1000")
 
 	s := &SQLite{db: db}
 	if err := s.migrate(); err != nil {
@@ -497,6 +509,16 @@ func (s *SQLite) CleanExpiredUserbotSessions(ctx context.Context, maxAge time.Du
 		return 0, fmt.Errorf("clean expired userbot sessions: %w", err)
 	}
 	return res.RowsAffected()
+}
+
+func (s *SQLite) SaveFeedback(ctx context.Context, userID int64, text string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO feedback (user_id, text, created_at) VALUES (?, ?, ?)`,
+		userID, text, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("save feedback for user %d: %w", userID, err)
+	}
+	return nil
 }
 
 func (s *SQLite) Close() error {

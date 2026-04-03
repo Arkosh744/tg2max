@@ -151,6 +151,9 @@ type Storage interface {
 	// CleanExpiredUserbotSessions removes sessions older than the given duration.
 	CleanExpiredUserbotSessions(ctx context.Context, maxAge time.Duration) (int64, error)
 
+	// SaveFeedback stores user feedback.
+	SaveFeedback(ctx context.Context, userID int64, text string) error
+
 	// Close closes the storage connection.
 	Close() error
 }

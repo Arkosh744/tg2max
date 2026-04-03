@@ -32,7 +32,7 @@ services:
       TG_API_ENDPOINT: "http://tg-bot-api:8081"
       TG_API_FILES_DIR: "/tg-files"
       ALLOWED_USER_IDS: "${ALLOWED_USER_IDS}"
-      DB_PATH: "/tmp/tg2max/tg2max.db"
+      DB_PATH: "/data/tg2max.db"
       ADMIN_ENABLED: "true"
       ADMIN_ADDR: ":8080"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
@@ -45,6 +45,10 @@ services:
       retries: 3
       start_period: 10s
     volumes:
+      - tg2max-data:/data
       - /tmp/tg2max:/tmp/tg2max
       - /home/arkosh/.local/share/tg2max-bot-api:/tg-files:ro
     restart: unless-stopped
+
+volumes:
+  tg2max-data:

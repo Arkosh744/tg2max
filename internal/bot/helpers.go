@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -36,6 +38,49 @@ func (b *Bot) editMessage(chatID int64, msgID int, text string) {
 	}
 }
 
+// cleanOrphanedTempDirs removes temp directories older than 1 hour from previous crashes.
+func (b *Bot) cleanOrphanedTempDirs() {
+	entries, err := os.ReadDir(b.tempDir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-1 * time.Hour)
+	var cleaned int
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "user_") && !strings.HasPrefix(name, "clone_") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		os.RemoveAll(filepath.Join(b.tempDir, name))
+		cleaned++
+	}
+	if cleaned > 0 {
+		b.log.Info("cleaned orphaned temp dirs", "count", cleaned)
+	}
+}
+
+// checkDiskSpace returns true if tempDir has at least requiredBytes free.
+func (b *Bot) checkDiskSpace(requiredBytes int64) bool {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(b.tempDir, &stat); err != nil {
+		b.log.Warn("failed to check disk space", "error", err)
+		return true // allow on error — don't block users due to stat failure
+	}
+	free := int64(stat.Bavail) * int64(stat.Bsize)
+	if free < requiredBytes {
+		b.log.Warn("low disk space", "free_mb", free/1024/1024, "required_mb", requiredBytes/1024/1024)
+		return false
+	}
+	return true
+}
+
 const userbotSessionMaxAge = 30 * 24 * time.Hour // 30 days
 
 // startUserbotSessionCleanup periodically removes expired MTProto sessions from the database.
@@ -57,6 +102,13 @@ func (b *Bot) startUserbotSessionCleanup(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// notifyAdmins sends a message to all admin users (fire-and-forget).
+func (b *Bot) notifyAdmins(text string) {
+	for id := range b.adminUserIDs {
+		b.reply(id, "🔔 "+text)
+	}
 }
 
 // deleteUserMessage attempts to delete a user's message from the chat (for sensitive data like auth codes).

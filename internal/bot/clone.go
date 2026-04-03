@@ -31,6 +31,19 @@ func (b *Bot) handleClone(msg *tgbotapi.Message) {
 	sess := b.sessions.GetOrCreate(msg.From.ID)
 	sess.mu.Lock()
 	state := sess.State
+
+	// Rate limit: max 3 /clone per hour
+	now := time.Now()
+	if now.Sub(sess.CloneWindowStart) > time.Hour {
+		sess.CloneAttempts = 0
+		sess.CloneWindowStart = now
+	}
+	sess.CloneAttempts++
+	if sess.CloneAttempts > 3 {
+		sess.mu.Unlock()
+		b.reply(msg.Chat.ID, "Слишком много попыток /clone. Попробуй через час.")
+		return
+	}
 	sess.mu.Unlock()
 
 	if state == StateMigrating || state == StatePaused ||
@@ -653,6 +666,7 @@ func (b *Bot) startCloneMigration(ctx context.Context, chatID int64, userID int6
 		defer func() {
 			if r := recover(); r != nil {
 				b.log.Error("panic in clone migration", "recover", r, "user", userID)
+				b.notifyAdmins(fmt.Sprintf("PANIC in clone migration (user %d): %v", userID, r))
 			}
 			os.RemoveAll(mediaDir)
 			b.cleanupCloneSession(sess)

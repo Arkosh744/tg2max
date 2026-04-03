@@ -57,6 +57,10 @@ type Session struct {
 	CursorFile     string    // path to cursor.json for progress reads
 	CursorName     string    // cursor chat name for progress lookup
 
+	// Clone rate limiting
+	CloneAttempts    int       // number of /clone attempts in current hour
+	CloneWindowStart time.Time // when the current rate limit window started
+
 	// Clone flow fields (userbot channel clone)
 	TGClient          *tgclient.Client              // MTProto client for this user
 	TGAuth            *tgclient.BotConversationAuth  // auth flow coordinator

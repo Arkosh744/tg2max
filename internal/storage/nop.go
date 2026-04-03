@@ -26,4 +26,5 @@ func (Nop) SaveUserbotSession(context.Context, int64, []byte) error             
 func (Nop) LoadUserbotSession(context.Context, int64) ([]byte, error)                  { return nil, nil }
 func (Nop) DeleteUserbotSession(context.Context, int64) error                          { return nil }
 func (Nop) CleanExpiredUserbotSessions(context.Context, time.Duration) (int64, error)  { return 0, nil }
+func (Nop) SaveFeedback(context.Context, int64, string) error                         { return nil }
 func (Nop) Close() error                                                               { return nil }

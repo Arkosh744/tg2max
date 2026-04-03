@@ -46,13 +46,23 @@ type Config struct {
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	verbose := flag.Bool("verbose", false, "debug logging")
+	jsonLogs := flag.Bool("json-logs", false, "JSON log format")
 	flag.Parse()
 
 	logLevel := slog.LevelInfo
 	if *verbose {
 		logLevel = slog.LevelDebug
 	}
-	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
+	if os.Getenv("LOG_FORMAT") == "json" {
+		*jsonLogs = true
+	}
+	var logHandler slog.Handler
+	if *jsonLogs {
+		logHandler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
+	} else {
+		logHandler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
+	}
+	log := slog.New(logHandler)
 
 	cfg := loadConfig(*configPath, log)
 

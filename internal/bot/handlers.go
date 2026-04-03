@@ -42,6 +42,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 			b.handleStats(ctx, msg)
 		case "clone":
 			b.handleClone(msg)
+		case "feedback":
+			b.handleFeedback(ctx, msg)
 		case "cancel":
 			b.handleCancel(msg)
 		case "reset":
@@ -251,6 +253,21 @@ func (b *Bot) handleHelp(msg *tgbotapi.Message) {
 /cancel — отменить/сбросить
 /reset — полный сброс сессии`, helpLimit)
 	b.reply(msg.Chat.ID, text)
+}
+
+// --- Feedback ---
+
+func (b *Bot) handleFeedback(ctx context.Context, msg *tgbotapi.Message) {
+	text := msg.CommandArguments()
+	if text == "" {
+		b.reply(msg.Chat.ID, "Использование: /feedback <текст>\nНапример: /feedback Бот зависает при загрузке ZIP")
+		return
+	}
+	if err := b.storage.SaveFeedback(ctx, msg.From.ID, text); err != nil {
+		b.log.Error("save feedback failed", "error", err)
+	}
+	b.notifyAdmins(fmt.Sprintf("Feedback от %s (ID: %d):\n%s", msg.From.FirstName, msg.From.ID, text))
+	b.reply(msg.Chat.ID, "Спасибо за обратную связь! Мы обязательно рассмотрим.")
 }
 
 // --- Status / Cancel ---

@@ -54,6 +54,12 @@ func (b *Bot) handleDocument(msg *tgbotapi.Message) {
 		return
 	}
 
+	// Disk space check — need ~2.5x file size for download + extraction
+	if !b.checkDiskSpace(int64(doc.FileSize) * 3) {
+		b.reply(msg.Chat.ID, "Недостаточно места на диске. Обратитесь к администратору.")
+		return
+	}
+
 	b.reply(msg.Chat.ID, "⏳ Загружаю и распаковываю...")
 
 	file, err := b.api.GetFile(tgbotapi.FileConfig{FileID: doc.FileID})

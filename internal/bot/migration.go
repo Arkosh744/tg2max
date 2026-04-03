@@ -294,6 +294,9 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 
 		if migErr != nil {
 			b.log.Error("migration failed", "chat", maxChatName, "error", migErr, "sent", stats.Sent)
+			if migCtx.Err() == nil {
+				b.notifyAdmins(fmt.Sprintf("Migration failed: %s (user %d)\nSent: %d\nError: %s", maxChatName, userID, stats.Sent, migErr))
+			}
 			b.editMessage(chatID, progressMsgID,
 				fmt.Sprintf("⚠️ Миграция прервана\n\n"+
 					"Отправлено: %d\n\n"+
@@ -354,6 +357,19 @@ func (b *Bot) startMigration(ctx context.Context, chatID int64, userID int64) {
 		}
 
 		b.editMessage(chatID, progressMsgID, result.String())
+
+		// Deep link button to open the Max chat
+		if migErr == nil && maxChatID > 0 {
+			link := fmt.Sprintf("https://max.ru/chat/%d", maxChatID)
+			keyboard := tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonURL("📬 Открыть в Max", link),
+				),
+			)
+			linkMsg := tgbotapi.NewMessage(chatID, "Перейти в чат:")
+			linkMsg.ReplyMarkup = keyboard
+			b.api.Send(linkMsg)
+		}
 
 		// Send an explicit ping for long migrations so the user gets a sound notification.
 		if stats.Duration > 5*time.Minute {

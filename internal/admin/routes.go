@@ -28,5 +28,8 @@ func (s *Server) setupRoutes() *http.ServeMux {
 	// SSE live updates
 	mux.Handle("GET /admin/events", s.requireAuth(http.HandlerFunc(s.handleSSE)))
 
+	// Metrics (behind auth)
+	mux.Handle("GET /admin/metrics", s.requireAuth(http.HandlerFunc(s.handleMetrics)))
+
 	return mux
 }

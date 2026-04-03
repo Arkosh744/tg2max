@@ -231,12 +231,14 @@ func (b *Bot) isAdmin(userID int64) bool {
 
 func (b *Bot) Run(ctx context.Context) error {
 	b.log.Info("bot started", "username", b.api.Self.UserName)
+	b.cleanOrphanedTempDirs()
 	b.sessions.StartCleanup(ctx)
 	b.startUserbotSessionCleanup(ctx)
 
 	// Crash recovery: mark orphaned migrations as failed
 	if active, err := b.storage.GetActiveMigration(ctx); err == nil && active != nil {
 		b.log.Warn("found orphaned migration from previous crash", "id", active.ID, "user", active.UserID)
+		b.notifyAdmins(fmt.Sprintf("Crash recovery: миграция #%d (user %d) была прервана крашем", active.ID, active.UserID))
 		if err := b.storage.FinishMigration(ctx, active.ID, "failed", active.SentMessages, "process crashed"); err != nil {
 			b.log.Error("failed to recover orphaned migration", "error", err)
 		}
@@ -252,6 +254,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		tgbotapi.BotCommand{Command: "reset", Description: "Сбросить сессию"},
 		tgbotapi.BotCommand{Command: "stats", Description: "Статистика (админ)"},
 		tgbotapi.BotCommand{Command: "clone", Description: "Клонировать канал через аккаунт"},
+		tgbotapi.BotCommand{Command: "feedback", Description: "Отправить отзыв"},
 	)
 	b.api.Request(commands)
 
